@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f7f4">
+  <title>الاتحاد أكادمي | أكاديمية كرة السلة</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Alexandria:wght@400;500;600;700;800&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main id="auth-screen" class="auth-screen">
+    <section class="auth-story">
+      <a class="brand auth-brand" href="#" aria-label="الاتحاد أكادمي">
+        <span class="brand-mark"><span></span><span></span><span></span></span>
+        <span class="brand-copy"><strong>الاتحاد</strong><small>أكادمي</small></span>
+      </a>
+      <div class="story-copy">
+        <span class="story-kicker"><i></i> أكاديمية كرة السلة</span>
+        <h1>كل خطوة في الملعب،<br><span>تقربك من حلمك.</span></h1>
+        <p>تابع جدول تدريباتك، واعرض كودك الخاص للحضور، وابقَ على تواصل مع فريق الأكاديمية.</p>
+        <div class="story-stats"><div><strong>كرة السلة</strong><span>رياضتنا الوحيدة</span></div><b></b><div><strong>حازم الدخاخني</strong><span>صاحب الأكاديمية</span></div></div>
+      </div>
+      <div class="story-ball">🏀</div>
+      <div class="story-bottom"><span>الاتحاد أكادمي</span><span>العب بشغف. تقدّم بثقة.</span></div>
+    </section>
+    <section class="auth-side">
+      <div class="auth-card">
+        <div class="auth-mobile-brand">
+          <span class="brand-mark"><span></span><span></span><span></span></span>
+          <span class="brand-copy"><strong>الاتحاد</strong><small>أكادمي</small></span>
+        </div>
+        <div id="member-auth">
+          <div class="auth-heading"><span class="auth-kicker">أهلًا بك في فريقنا</span><h2 id="auth-title">سجّل دخولك</h2><p id="auth-subtitle">ادخل إلى حسابك لمتابعة رحلتك الرياضية.</p></div>
+          <div class="auth-tabs" role="tablist"><button type="button" class="auth-tab selected" data-auth-tab="login">تسجيل الدخول</button><button type="button" class="auth-tab" data-auth-tab="register">عضو جديد</button></div>
+          <form id="login-form" class="auth-form">
+            <label>اسم المستخدم<input name="username" autocomplete="username" required placeholder="اسم المستخدم"></label>
+            <label>كلمة المرور<span class="password-input"><input name="password" type="password" autocomplete="current-password" required placeholder="أدخل كلمة المرور"><button type="button" class="show-password" aria-label="إظهار كلمة المرور">◉</button></span></label>
+            <button class="primary-button auth-submit" type="submit">دخول إلى حسابي <span>←</span></button>
+            <p class="form-note">ولي الأمر والمدرب: استخدم اسم المستخدم وكلمة المرور. اللاعب يمكنه الدخول بكود الحضور.</p>
+          </form>
+          <form id="register-form" class="auth-form" hidden>
+            <label>اسم ولي الأمر<input name="guardianName" autocomplete="name" required placeholder="الاسم الكامل لولي الأمر"></label>
+            <div class="form-row"><label>رقم هاتف ولي الأمر<input name="guardianPhone" type="tel" inputmode="tel" required placeholder="01xxxxxxxxx"></label><label>رقم واتساب ولي الأمر<input name="whatsappPhone" type="tel" inputmode="tel" required placeholder="01xxxxxxxxx"></label></div>
+            <div class="form-row"><label>اسم المستخدم<input name="username" autocomplete="username" minlength="3" required placeholder="اختر اسمًا للدخول"></label><label>كلمة المرور<span class="password-input"><input name="password" type="password" autocomplete="new-password" minlength="6" required placeholder="٦ أحرف على الأقل"><button type="button" class="show-password" aria-label="إظهار كلمة المرور">◉</button></span></label></div>
+            <p class="form-note">احفظ اسم المستخدم وكلمة المرور جيدًا؛ ستستخدمهما للدخول إلى حسابك ومتابعة لاعبيك.</p>
+            <button class="primary-button auth-submit" type="submit">إنشاء حساب ولي الأمر <span>←</span></button>
+            <p class="form-note">بعد الدخول يمكنك إضافة لاعب أو أكثر، وإدخال تاريخ ميلاد كل لاعب وأيام تدريبه.</p>
+          </form>
+          <button type="button" class="coach-entry" id="player-code-entry">دخول اللاعب بكود الحضور <span>← كود اللاعب</span></button>
+          <button type="button" class="coach-entry" id="coach-entry">دخول المشرف <span>← حازم الدخاخني</span></button>
+        </div>
+        <div id="coach-auth" hidden>
+          <div class="auth-heading"><span class="auth-kicker">إدارة الأكاديمية</span><h2>دخول المشرف</h2><p>حساب صاحب الأكاديمية حازم الدخاخني فقط.</p></div>
+          <form id="coach-form" class="auth-form coach-form">
+            <div class="coach-identity"><span class="avatar avatar-admin">ح</span><span><strong>حازم الدخاخني</strong><small>صاحب الأكاديمية والمشرف</small></span></div>
+            <label>كلمة مرور المشرف<input name="password" type="password" required placeholder="كلمة مرور المشرف"></label>
+            <button class="primary-button auth-submit" type="submit">الدخول إلى لوحة المشرف <span>←</span></button>
+          </form>
+          <button type="button" class="coach-entry" id="member-entry"><span>← العودة إلى دخول الأعضاء</span></button>
+        </div>
+      </div>
+      <footer class="site-credit">DESIGNED BY <a href="https://wa.me/message/V7YHLH5CPOFRA" target="_blank" rel="noopener noreferrer">AF</a></footer>
+      <p class="auth-legal">بانضمامك، أنت توافق على سياسة الأكاديمية وشروط الاستخدام.</p>
+    </section>
+  </main>
+
+  <div class="portal" id="portal" hidden>
+    <aside class="portal-sidebar" id="portal-sidebar">
+      <a class="brand" href="#" aria-label="الاتحاد أكادمي"><span class="brand-mark"><span></span><span></span><span></span></span><span class="brand-copy"><strong>الاتحاد</strong><small>أكادمي</small></span></a>
+      <div class="academy-switch"><span class="academy-icon">ا</span><span class="academy-name"><strong>الاتحاد أكادمي</strong></span></div>
+      <p class="nav-label">مساحتي الرياضية</p>
+      <nav class="portal-nav" aria-label="القائمة الرئيسية">
+        <button class="portal-nav-item active" data-view="home"><span>◫</span>الرئيسية</button>
+        <button class="portal-nav-item" data-view="schedule"><span>◷</span>جدول التدريبات</button>
+        <button class="portal-nav-item member-only" data-view="attendance"><span>✓</span>كودي</button>
+        <button class="portal-nav-item member-only" data-view="subscription"><span>▤</span>اشتراكي</button>
+        <button class="portal-nav-item member-only" data-view="payments"><span>⇄</span>المدفوعات</button>
+        <button class="portal-nav-item supervisor-only" data-view="attendance" hidden><span>✓</span>حضور اللاعبين</button>
+        <button class="portal-nav-item trainer-only" data-view="attendance" hidden><span>✓</span>تسجيل حضور لاعب</button>
+        <button class="portal-nav-item supervisor-only" data-view="subscription" hidden><span>▤</span>اشتراكات اللاعبين</button>
+        <button class="portal-nav-item supervisor-only" data-view="payments" hidden><span>⇄</span>تأكيد التحويلات</button>
+        <button class="portal-nav-item supervisor-only" data-view="settings" hidden><span>⚙</span>أيام العمل والأسعار</button>
+        <button class="portal-nav-item supervisor-only" data-view="trainers" hidden><span>♙</span>إدارة المدربين</button>
+        <button class="portal-nav-item supervisor-only" data-view="trainerAttendance" hidden><span>✓</span>حضور المدربين</button>
+        <button class="portal-nav-item supervisor-only" data-view="finances" hidden><span>ج.م</span>الإيرادات والمصروفات</button>
+      </nav>
+      <div class="portal-side-bottom"><div class="help-card"><span class="help-spark">✳</span><strong>نحن بجانبك</strong><p>تواصل مع الأكاديمية لأي استفسار.</p><a class="contact-academy-link" id="contact-academy" href="https://wa.me/message/V7YHLH5CPOFRA" target="_blank" rel="noopener noreferrer">تواصل معنا · 01017692213 <span>←</span></a></div><button class="profile" id="profile-button"><span class="avatar avatar-admin" id="user-avatar">ع</span><span class="profile-copy"><strong id="user-name">اللاعب</strong><small id="user-role">لاعب الأكاديمية</small></span><span class="profile-more">•••</span></button></div>
+    </aside>
+    <main class="portal-main">
+      <header class="portal-topbar"><div class="topbar-start"><button class="mobile-menu icon-button" id="portal-menu" aria-label="فتح القائمة">☰</button><div class="breadcrumb"><span>مساحتي</span><b>/</b><strong id="view-title">الرئيسية</strong></div></div><div class="topbar-actions"><button class="icon-button notification-button" id="portal-notifications" aria-label="التنبيهات">♧<i></i></button><button class="logout-button" id="logout-button">تسجيل الخروج <span>↪</span></button></div></header>
+      <div id="portal-content" class="portal-content"></div>
+      <footer class="site-credit">DESIGNED BY <a href="https://wa.me/message/V7YHLH5CPOFRA" target="_blank" rel="noopener noreferrer">AF</a></footer>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="action-modal" aria-hidden="true"><section class="modal" role="dialog" aria-modal="true"><div class="modal-heading"><div><span class="modal-kicker" id="modal-kicker">الأكاديمية</span><h2 id="modal-title"></h2></div><button class="close-modal" id="modal-close" aria-label="إغلاق">×</button></div><form id="action-form"></form></section></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"><span>✓</span><p></p></div>
+  <script src="app.js"></script>
+</body>
+</html>
