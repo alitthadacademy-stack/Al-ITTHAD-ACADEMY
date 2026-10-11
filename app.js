@@ -485,7 +485,7 @@ function openTrainerForm() {
 function openPlayerForm() {
   if (currentUser?.role !== "guardian") { showToast("إضافة لاعب متاحة من حساب ولي الأمر فقط."); return; }
   if (!data.workDays.length) { showToast("لم يحدد المشرف أيام عمل الأكاديمية بعد."); return; }
-  openModal("إضافة لاعب إلى حساب ولي الأمر", `<label>اسم اللاعب<input name="name" required maxlength="80" placeholder="اسم اللاعب بالكامل"></label><label>تاريخ ميلاد اللاعب (اليوم / الشهر / السنة)<input name="birthDate" type="text" inputmode="numeric" pattern="[0-9٠-٩]{1,2}/[0-9٠-٩]{1,2}/[0-9٠-٩]{4}" maxlength="10" required placeholder="يوم/شهر/سنة · مثال: 20/05/2015"></label><fieldset class="registration-days"><legend>أيام حضور اللاعب أسبوعيًا</legend><div class="day-choice-grid">${dayCheckboxes(data.workDays)}</div></fieldset><p class="modal-explainer">سيُنشأ كود رقمي ثابت للاعب تلقائيًا. يعرضه اللاعب للمشرف لتسجيل حضوره.</p>`, "حفظ اللاعب", form => savePlayer(form), "حساب ولي الأمر");
+  openModal("إضافة لاعب إلى حساب ولي الأمر", `<label>اسم اللاعب<input name="name" required maxlength="80" placeholder="اسم اللاعب بالكامل"></label><fieldset class="registration-birth-date"><legend>تاريخ ميلاد اللاعب</legend><div class="birth-date-fields"><label>اليوم<input name="birthDay" type="text" inputmode="numeric" pattern="[0-9٠-٩]{1,2}" maxlength="2" required placeholder="يوم"></label><label>الشهر<input name="birthMonth" type="text" inputmode="numeric" pattern="[0-9٠-٩]{1,2}" maxlength="2" required placeholder="شهر"></label><label>السنة<input name="birthYear" type="text" inputmode="numeric" pattern="[0-9٠-٩]{4}" maxlength="4" required placeholder="سنة"></label></div></fieldset><fieldset class="registration-days"><legend>أيام حضور اللاعب أسبوعيًا</legend><div class="day-choice-grid">${dayCheckboxes(data.workDays)}</div></fieldset><p class="modal-explainer">سيُنشأ كود رقمي ثابت للاعب تلقائيًا. يعرضه اللاعب للمشرف لتسجيل حضوره.</p>`, "حفظ اللاعب", form => savePlayer(form), "حساب ولي الأمر");
 }
 
 function openPlayerCodeLogin() {
@@ -501,16 +501,14 @@ function openPlayerCodeLogin() {
 function savePlayer(form) {
   if (currentUser?.role !== "guardian") { showToast("إضافة لاعب متاحة من حساب ولي الأمر فقط."); return; }
   const name = String(form.get("name")).trim();
-  const birthDateInput = normalizeDigits(String(form.get("birthDate")).trim());
-  const birthDateParts = birthDateInput.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  const day = birthDateParts ? Number(birthDateParts[1]) : 0;
-  const month = birthDateParts ? Number(birthDateParts[2]) : 0;
-  const year = birthDateParts ? Number(birthDateParts[3]) : 0;
-  const birthDate = birthDateParts ? `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}` : "";
+  const day = Number(normalizeDigits(String(form.get("birthDay")).trim()));
+  const month = Number(normalizeDigits(String(form.get("birthMonth")).trim()));
+  const year = Number(normalizeDigits(String(form.get("birthYear")).trim()));
+  const birthDate = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   const weeklyDays = form.getAll("weeklyDays").map(String).filter(day => data.workDays.includes(day));
   const birthday = new Date(`${birthDate}T12:00:00`);
-  if (name.length < 2 || !birthDateParts || Number.isNaN(birthday.getTime()) || birthday.getFullYear() !== year || birthday.getMonth() !== month - 1 || birthday.getDate() !== day) {
-    showToast("أدخل تاريخ الميلاد بالترتيب يوم/شهر/سنة، مثل 20/05/2015.");
+  if (name.length < 2 || !Number.isInteger(day) || !Number.isInteger(month) || !Number.isInteger(year) || year < 1000 || Number.isNaN(birthday.getTime()) || birthday.getFullYear() !== year || birthday.getMonth() !== month - 1 || birthday.getDate() !== day) {
+    showToast("أدخل يومًا وشهرًا وسنة صحيحة لتاريخ الميلاد.");
     return;
   }
   if (!weeklyDays.length) { showToast("اختر يوم تدريب واحدًا على الأقل للاعب."); return; }
