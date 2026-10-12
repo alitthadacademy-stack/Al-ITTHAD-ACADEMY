@@ -319,8 +319,8 @@ function academyServices() {
       }
     },
     async signInWithPlayerCode(code) {
-      const credential = await signInAnonymously(auth);
       try {
+        const credential = await signInAnonymously(auth);
         const codeSnapshot = await getDoc(playerCodeRef(code));
         if (!codeSnapshot.exists()) throw new Error("كود اللاعب غير صحيح.");
         await setDoc(doc(db, "playerSessions", credential.user.uid), { playerCode: code, createdAt: serverTimestamp() });
@@ -328,7 +328,13 @@ function academyServices() {
         if (!playerSnapshot.exists()) throw new Error("لم يتم العثور على بيانات اللاعب.");
         return { ...playerSnapshot.data(), id: playerSnapshot.data().id || playerSnapshot.id, role: "member", authUid: credential.user.uid };
       } catch (error) {
-        await signOut(auth);
+        if (auth.currentUser?.isAnonymous) await signOut(auth);
+        if (error?.code === "auth/configuration-not-found" || error?.code === "auth/operation-not-allowed") {
+          throw new Error("دخول اللاعبين يحتاج إلى تفعيل Firebase Authentication → Sign-in method → Anonymous في مشروع الأكاديمية.");
+        }
+        if (error?.code === "permission-denied") {
+          throw new Error("تعذر الوصول إلى كود اللاعب. تأكد من نشر firestore.rules وأن الكود تابع للاعب مسجل في Firestore.");
+        }
         throw error;
       }
     },
@@ -508,8 +514,18 @@ function academyServices() {
     },
     async uploadReceipt(guardianId, paymentId, blob) {
       const receiptRef = ref(storage, `receipts/${guardianId}/${paymentId}.jpg`);
-      await uploadBytes(receiptRef, blob, { contentType: "image/jpeg" });
-      return { path: receiptRef.fullPath, url: await getDownloadURL(receiptRef) };
+      try {
+        await uploadBytes(receiptRef, blob, { contentType: "image/jpeg" });
+        return { path: receiptRef.fullPath, url: await getDownloadURL(receiptRef) };
+      } catch (error) {
+        if (error?.code === "storage/unauthorized") {
+          throw new Error("رفض Firebase رفع الإيصال. تأكد من تسجيل الدخول كولي أمر ونشر storage.rules.");
+        }
+        if (error?.code === "storage/bucket-not-found" || error?.code === "storage/no-default-bucket") {
+          throw new Error("Firebase Storage غير مهيأ. أنشئ Storage bucket في مشروع الأكاديمية وتأكد من تطابقه مع firebaseConfig.");
+        }
+        throw error;
+      }
     },
     async deleteReceipt(path) {
       await deleteObject(ref(storage, path));
@@ -521,17 +537,15 @@ function academyServices() {
     async savePayment(payment) {
       if (!auth.currentUser || auth.currentUser.uid !== payment.guardianId) throw new Error("لا يمكن حفظ دفعة لهذا الحساب.");
       const safePayment = withoutPassword(payment);
-      await setDoc(doc(db, "payments", payment.id), { ...safePayment, updatedAt: serverTimestamp() }, { merge: false });
+      try {
+        await setDoc(doc(db, "payments", payment.id), { ...safePayment, updatedAt: serverTimestamp() }, { merge: false });
+      } catch (error) {
+        if (error?.code === "permission-denied") {
+          throw new Error("تم رفع الصورة لكن Firestore رفض طلب الدفع. تأكد من نشر firestore.rules وأن حساب ولي الأمر وبيانات اللاعب متطابقة.");
+        }
+        throw error;
+      }
       baseline.set(`payments/${payment.id}`, baselineValue("payments", safePayment));
-    },
-    async createTrainerInvite(email, name) {
-      const normalizedEmail = email.trim().toLowerCase();
-      await setDoc(doc(db, "trainerInvites", normalizedEmail), {
-        email: normalizedEmail,
-        name,
-        createdAt: serverTimestamp(),
-        createdBy: auth.currentUser.uid
-      });
     },
     async deleteGuardian(guardian, players) {
       await runTransaction(db, async transaction => {

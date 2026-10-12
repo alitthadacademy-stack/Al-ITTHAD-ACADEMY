@@ -612,12 +612,12 @@ function trainerScheduleView() {
 
 function coachTrainersView() {
   const trainers = data.users.filter(user => user.role === "trainer");
-  return `<section class="page-intro"><div><p class="eyebrow">فريق الأكاديمية</p><h1>إدارة المدربين</h1><p class="welcome-subtitle">ادعُ المدرب ببريده الإلكتروني، ثم عيّنه إلى فئته في جدول التدريبات.</p></div><button class="primary-button" data-action="new-trainer">＋ دعوة مدرب</button></section><section class="panel">${trainers.length ? `<div class="table-wrap"><table><thead><tr><th>المدرب</th><th>البريد الإلكتروني</th><th>الحصص المسندة</th><th>الحضور اليوم</th></tr></thead><tbody>${trainers.map(trainer => { const sessions = data.sessions.filter(session => session.coachId === trainer.id); const attended = data.trainerAttendance.some(record => record.trainerId === trainer.id && record.isoDate === localDateString() && record.status === "حاضر"); return `<tr><td>${escapeHtml(trainer.name)}</td><td>${escapeHtml(trainer.email || "—")}</td><td>${arabicDigits(sessions.length)} حصة</td><td><span class="subscription-badge ${attended ? "status-active" : "status-soon"}">${attended ? "حاضر" : "لم يسجل بعد"}</span></td></tr>`; }).join("")}</tbody></table></div>` : '<div class="empty-state"><p>أضف حسابات المدربين أولًا لإسناد الحصص إليهم.</p></div>'}</section>`;
+  return `<section class="page-intro"><div><p class="eyebrow">فريق الأكاديمية</p><h1>إدارة المدربين</h1><p class="welcome-subtitle">سجّل أسماء المدربين ثم عيّنهم إلى حصص التدريب. لا يحتاج المدرب إلى حساب أو تسجيل دخول.</p></div><button class="primary-button" data-action="new-trainer">＋ إضافة مدرب</button></section><section class="panel">${trainers.length ? `<div class="table-wrap"><table><thead><tr><th>المدرب</th><th>الحصص المسندة</th><th>الحضور اليوم</th></tr></thead><tbody>${trainers.map(trainer => { const sessions = data.sessions.filter(session => session.coachId === trainer.id); const attended = data.trainerAttendance.some(record => record.trainerId === trainer.id && record.isoDate === localDateString() && record.status === "حاضر"); return `<tr><td>${escapeHtml(trainer.name)}</td><td>${arabicDigits(sessions.length)} حصة</td><td><span class="subscription-badge ${attended ? "status-active" : "status-soon"}">${attended ? "حاضر" : "لم يسجل بعد"}</span></td></tr>`; }).join("")}</tbody></table></div>` : '<div class="empty-state"><p>أضف أسماء المدربين لإسنادهم إلى الحصص وتسجيل حضورهم.</p></div>'}</section>`;
 }
 
 function openTrainerForm() {
   if (currentUser?.role !== "coach") { showToast("إدارة حسابات المدربين من صلاحية المشرف فقط."); return; }
-  openModal("إعداد حساب مدرب", `<label>اسم المدرب<input name="name" required maxlength="80" placeholder="اسم المدرب بالكامل"></label><label>البريد الإلكتروني للمدرب<input name="email" type="email" required placeholder="name@example.com"></label><p class="modal-explainer">أنشئ حساب Firebase Authentication لهذا البريد من لوحة Firebase قبل أن يسجل المدرب دخوله. يُفعّل حسابه بدور مدرب بعد تسجيل الدخول.</p>`, "حفظ إعداد المدرب", form => saveTrainer(form), "إدارة المدربين");
+  openModal("إضافة مدرب", `<label>اسم المدرب<input name="name" required minlength="2" maxlength="80" placeholder="اسم المدرب بالكامل"></label><p class="modal-explainer">سيُضاف الاسم إلى قائمة المدربين ويمكن اختياره عند إعداد جدول التدريب. لا يلزم بريد إلكتروني أو حساب دخول للمدرب.</p>`, "حفظ اسم المدرب", form => saveTrainer(form), "إدارة المدربين");
 }
 
 function openPlayerForm() {
@@ -634,8 +634,9 @@ function openPlayerFormFor(player = null) {
 }
 
 function openPlayerCodeLogin() {
-  openModal("دخول اللاعب بكود الحضور", `<label>كود اللاعب الرقمي<input name="playerCode" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required placeholder="أدخل الكود المكوّن من ٦ أرقام"></label><p class="modal-explainer">كود اللاعب ثابت، ويستخدم للدخول إلى حساب اللاعب ولتسجيل الحضور بواسطة المشرف.</p>`, "دخول اللاعب", async form => {
+  openModal("دخول اللاعب بكود الحضور", `<label>كود اللاعب الرقمي<input name="playerCode" inputmode="numeric" pattern="[0-9٠-٩۰-۹]{6}" minlength="6" maxlength="6" required placeholder="أدخل الكود المكوّن من ٦ أرقام"></label><p class="modal-explainer">كود اللاعب ثابت، ويستخدم للدخول إلى حساب اللاعب ولتسجيل الحضور بواسطة المشرف.</p>`, "دخول اللاعب", async form => {
     const code = normalizeDigits(String(form.get("playerCode")).trim());
+    if (!/^\d{6}$/.test(code)) throw new Error("أدخل كود اللاعب المكوّن من ٦ أرقام.");
     const firebase = await window.firebaseReady;
     authFlowInProgress = true;
     try {
@@ -694,14 +695,23 @@ async function savePlayer(form, playerId = null) {
 }
 
 async function saveTrainer(form) {
-  if (currentUser?.role !== "coach") { showToast("دعوة المدربين متاحة للمشرف فقط."); return; }
-  const name = String(form.get("name")).trim();
-  const email = String(form.get("email")).trim().toLowerCase();
-  if (name.length < 2 || !email) { showToast("أدخل اسم المدرب وبريده الإلكتروني."); return; }
-  const firebase = await window.firebaseReady;
-  await firebase.createTrainerInvite(email, name);
+  if (currentUser?.role !== "coach") { showToast("إضافة المدربين متاحة للمشرف فقط."); return; }
+  const name = String(form.get("name")).trim().replace(/\s+/g, " ");
+  if (name.length < 2 || name.length > 80) { showToast("أدخل اسمًا صحيحًا للمدرب."); return; }
+  if (data.users.some(user => user.role === "trainer" && user.name.trim().toLocaleLowerCase("ar") === name.toLocaleLowerCase("ar"))) {
+    showToast("هذا الاسم مسجل بالفعل ضمن المدربين.");
+    return;
+  }
+  const trainer = { id: crypto.randomUUID(), role: "trainer", name, joinedAt: new Date().toISOString() };
+  data.users.push(trainer);
+  if (!saveData()) {
+    data.users.pop();
+    return;
+  }
   closeModal();
-  showToast(`تم حفظ تهيئة ${name}. أنشئ حساب بريده في Firebase Authentication قبل تسجيل دخوله.`);
+  activeView = "trainers";
+  renderView();
+  showToast(`تمت إضافة المدرب ${name}.`);
 }
 
 function supervisorTrainerAttendanceView() {
@@ -974,7 +984,7 @@ function openCodeAttendanceForm() {
   if (currentUser?.role !== "coach") { showToast("تسجيل الحضور بالكود من صلاحية المشرف فقط."); return; }
   const options = data.sessions.map(session => `<option value="${escapeHtml(session.id)}">${escapeHtml(session.title)} · ${escapeHtml(sessionDays(session).join("، "))} · ${escapeHtml(session.time)}</option>`).join("");
   if (!options) { showToast("أضف مجموعة تدريب إلى الجدول أولًا."); return; }
-  openModal("تسجيل حضور بكود اللاعب", `<label>كود اللاعب<input name="playerCode" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required placeholder="الكود الرقمي المكوّن من ٦ أرقام"></label><label>مجموعة التدريب<select name="sessionId" required>${options}</select></label><p class="modal-explainer">يُسجل حضور اليوم فور التأكيد. إذا كان اللاعب لم يدفع بعد، يمكنك تسجيله كاستثناء وسيُخصم التمرين عند تجديد الاشتراك وسداد كامل المبلغ.</p>`, "تسجيل الحضور الآن", form => saveCodeAttendance(form), "الحضور والغياب");
+  openModal("تسجيل حضور بكود اللاعب", `<label>كود اللاعب<input name="playerCode" inputmode="numeric" pattern="[0-9٠-٩۰-۹]{6}" minlength="6" maxlength="6" required placeholder="الكود الرقمي المكوّن من ٦ أرقام"></label><label>مجموعة التدريب<select name="sessionId" required>${options}</select></label><p class="modal-explainer">يُسجل حضور اليوم فور التأكيد. إذا كان اللاعب لم يدفع بعد، يمكنك تسجيله كاستثناء وسيُخصم التمرين عند تجديد الاشتراك وسداد كامل المبلغ.</p>`, "تسجيل الحضور الآن", form => saveCodeAttendance(form), "الحضور والغياب");
 }
 
 function saveCodeAttendance(form) {
@@ -1458,9 +1468,9 @@ byId("login-form").addEventListener("submit", async event => {
   try {
     const firebase = await window.firebaseReady;
     const profile = await firebase.signIn(String(form.get("email")), String(form.get("password")));
-    if (!["guardian", "trainer"].includes(profile.role)) {
+    if (profile.role !== "guardian") {
       await firebase.signOut();
-      throw new Error("استخدم مدخل المشرف أو اللاعب المخصص لهذا الحساب.");
+      throw new Error("المدرب يستخدم مدخل الاسم وكلمة المرور المخصص له، والمشرف يستخدم مدخله الخاص.");
     }
     await activateCloudProfile(profile);
   } catch (error) {

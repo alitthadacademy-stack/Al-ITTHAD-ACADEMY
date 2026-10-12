@@ -45,11 +45,12 @@ service cloud.firestore {
 
     match /users/{uid} {
       allow read: if isCoach() || (signedIn() && request.auth.uid == uid);
-      allow create: if signedIn()
-        && request.auth.uid == uid
-        && ((request.resource.data.role == 'guardian'
-          && request.resource.data.email == request.auth.token.email)
-          || invitedTrainer(uid));
+      allow create: if (isCoach() && request.resource.data.role == 'trainer')
+        || (signedIn()
+          && request.auth.uid == uid
+          && ((request.resource.data.role == 'guardian'
+            && request.resource.data.email == request.auth.token.email)
+            || invitedTrainer(uid)));
       allow update: if isCoach()
         || (isGuardian() && request.auth.uid == uid
           && request.resource.data.role == resource.data.role
