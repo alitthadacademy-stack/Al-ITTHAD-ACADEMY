@@ -1,4 +1,3 @@
-const COACH_PASSWORD = "20220105050";
 const STORAGE_KEY = "alEtihadAcademy.portal.v1";
 const WEEK_DAYS = ["السبت", "الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"];
 const DEFAULT_WORK_DAYS = ["السبت", "الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس"];
@@ -15,6 +14,9 @@ let currentUser = null;
 let activeView = "home";
 let selectedPlayerId = null;
 let data = loadData();
+let cloudProfile = null;
+let cloudWriteQueue = Promise.resolve();
+let authFlowInProgress = false;
 
 function emptyData() {
   return { users: [], sessions: [], payments: [], attendance: [], attendanceExceptions: [], trainerAttendance: [], expenses: [], instaPayAddress: DEFAULT_INSTAPAY_NUMBER, paymentDestinationType: "instapay", workDays: [...DEFAULT_WORK_DAYS], pricesByDays: { ...DEFAULT_DAY_PRICES } };
@@ -30,7 +32,10 @@ function loadData() {
     const usedCodes = new Set();
     const migratedGuardians = [];
     const normalizedUsers = users.map(user => {
-      if (user.role !== "member") return user;
+      if (user.role !== "member") {
+        const { password, ...safeUser } = user;
+        return safeUser;
+      }
       const legacyDayCount = { basic: 2, plus: 3, pro: 4 }[user.plan] || user.weeklyDaysCount || 2;
       let playerCode = String(user.playerCode || "");
       if (!/^\d{6}$/.test(playerCode) || usedCodes.has(playerCode)) playerCode = createPlayerCode(usedCodes);
@@ -43,13 +48,12 @@ function loadData() {
           name: user.guardian || user.name,
           guardianPhone: user.guardianPhone || "",
           whatsappPhone: user.whatsappPhone || user.guardianPhone || "",
-          username: user.username,
-          password: user.password,
           joinedAt: user.joinedAt || new Date().toISOString()
         });
       }
+      const { password, ...safeUser } = user;
       return {
-        ...user,
+        ...safeUser,
         guardianId,
         playerCode,
         joinedAt: user.joinedAt || new Date().toISOString(),
@@ -111,9 +115,13 @@ function playerCategoryForBirthDate(birthDate) {
   return age < 10 ? "براعم تحت ١٠" : age < 14 ? "ناشئين تحت ١٤" : age < 18 ? "شباب تحت ١٨" : "شباب ١٨+";
 }
 
-function saveData() {
+function saveLocalData() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    const safeData = { ...data, users: data.users.map(user => {
+      const { password, ...safeUser } = user;
+      return safeUser;
+    }) };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(safeData));
     return true;
   } catch (error) {
     console.error("تعذر حفظ بيانات الأكاديمية في هذا المتصفح.", error);
@@ -122,7 +130,26 @@ function saveData() {
   }
 }
 
-saveData();
+function saveData() {
+  if (!saveLocalData()) return false;
+  if (cloudProfile) {
+    const snapshot = JSON.parse(JSON.stringify(data));
+    queueCloudSave(snapshot, cloudProfile);
+  }
+  return true;
+}
+
+function queueCloudSave(snapshot, profile) {
+  cloudWriteQueue = cloudWriteQueue
+    .then(() => window.firebaseReady)
+    .then(firebase => firebase.saveAcademyData(snapshot, profile))
+    .catch(error => {
+      console.error("تعذر حفظ تغييرات الأكاديمية في Firestore.", error);
+      showToast(error instanceof Error ? `تعذر الحفظ سحابيًا: ${error.message}` : "تعذر حفظ التغييرات سحابيًا.");
+    });
+}
+
+saveLocalData();
 
 function showToast(message) {
   toast.querySelector("p").textContent = message;
@@ -154,7 +181,10 @@ function localDateString(date = new Date()) {
 }
 
 function normalizeDigits(value) {
-  return String(value).replace(/[٠-٩]/g, digit => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)));
+  return String(value).replace(/[٠-٩۰-۹]/g, digit => {
+    const digitCode = digit.charCodeAt(0);
+    return String(digitCode >= 0x06f0 ? digitCode - 0x06f0 : digitCode - 0x0660);
+  });
 }
 
 function sessionStartTimestamp(session, isoDate) {
@@ -237,6 +267,35 @@ function signIn(user) {
   renderView();
 }
 
+async function activateCloudProfile(profile) {
+  cloudProfile = profile;
+  currentUser = profile;
+  data = emptyData();
+  try {
+    const firebase = await window.firebaseReady;
+    await firebase.loadAcademyData(profile, data, () => {
+      saveLocalData();
+      if (currentUser && !byId("portal").hidden) renderView();
+    }, error => {
+      showToast(error instanceof Error ? `تعذرت المزامنة السحابية: ${error.message}` : "تعذرت مزامنة بيانات الأكاديمية.");
+    });
+    saveLocalData();
+    signIn(profile);
+  } catch (error) {
+    cloudProfile = null;
+    currentUser = null;
+    console.error("تعذر تحميل بيانات الحساب من Firestore.", error);
+    try {
+      const firebase = await window.firebaseReady;
+      await firebase.signOut();
+    } catch (signOutError) {
+      console.error("تعذر إنهاء جلسة Firebase بعد فشل تحميل البيانات.", signOutError);
+    }
+    showAuth();
+    throw error;
+  }
+}
+
 function dayCheckboxes(days, selectedDays = [], name = "weeklyDays") {
   if (!days.length) return '<p class="form-note">لم يحدد المدرب أيام العمل بعد.</p>';
   return days.map(day => `<label class="day-choice"><input type="checkbox" name="${name}" value="${escapeHtml(day)}" ${selectedDays.includes(day) ? "checked" : ""}><span>${escapeHtml(day)}</span></label>`).join("");
@@ -260,7 +319,11 @@ function guardianChildBar() {
   const children = childrenForGuardian();
   if (!children.length) return `<section class="panel"><p>أضف بيانات لاعبك لعرض الجدول والاشتراك وكود الحضور.</p><button class="primary-button" data-action="new-player">＋ إضافة لاعب</button></section>`;
   if (!children.some(child => child.id === selectedPlayerId)) selectedPlayerId = children[0].id;
-  return `<section class="panel child-picker"><label for="selected-player">اللاعب المعروض</label><select id="selected-player">${children.map(child => `<option value="${escapeHtml(child.id)}" ${child.id === selectedPlayerId ? "selected" : ""}>${escapeHtml(child.name)} · كود ${escapeHtml(child.playerCode)}</option>`).join("")}</select><button class="small-action" data-action="new-player">＋ إضافة لاعب</button></section>`;
+  const selectedChild = children.find(child => child.id === selectedPlayerId);
+  const completeProfile = selectedChild && (!selectedChild.birthDate || !selectedChild.weeklyDays?.length)
+    ? `<button class="small-action" data-action="complete-player" data-player="${escapeHtml(selectedChild.id)}">استكمال بيانات اللاعب</button>`
+    : "";
+  return `<section class="panel child-picker"><label for="selected-player">اللاعب المعروض</label><select id="selected-player">${children.map(child => `<option value="${escapeHtml(child.id)}" ${child.id === selectedPlayerId ? "selected" : ""}>${escapeHtml(child.name)} · كود ${escapeHtml(child.playerCode)}</option>`).join("")}</select>${completeProfile}<button class="small-action" data-action="new-player">＋ إضافة لاعب</button></section>`;
 }
 
 function sessionIncludesMember(session, user) {
@@ -549,31 +612,43 @@ function trainerScheduleView() {
 
 function coachTrainersView() {
   const trainers = data.users.filter(user => user.role === "trainer");
-  return `<section class="page-intro"><div><p class="eyebrow">فريق الأكاديمية</p><h1>إدارة المدربين</h1><p class="welcome-subtitle">أنشئ حسابات المدربين، ثم عيّن كل مدرب إلى فئته في جدول التدريبات.</p></div><button class="primary-button" data-action="new-trainer">＋ إضافة مدرب</button></section><section class="panel">${trainers.length ? `<div class="table-wrap"><table><thead><tr><th>المدرب</th><th>اسم المستخدم</th><th>الحصص المسندة</th><th>الحضور اليوم</th></tr></thead><tbody>${trainers.map(trainer => { const sessions = data.sessions.filter(session => session.coachId === trainer.id); const attended = data.trainerAttendance.some(record => record.trainerId === trainer.id && record.isoDate === localDateString() && record.status === "حاضر"); return `<tr><td>${escapeHtml(trainer.name)}</td><td>${escapeHtml(trainer.username)}</td><td>${arabicDigits(sessions.length)} حصة</td><td><span class="subscription-badge ${attended ? "status-active" : "status-soon"}">${attended ? "حاضر" : "لم يسجل بعد"}</span></td></tr>`; }).join("")}</tbody></table></div>` : '<div class="empty-state"><p>أضف حسابات المدربين أولًا لإسناد الحصص إليهم.</p></div>'}</section>`;
+  return `<section class="page-intro"><div><p class="eyebrow">فريق الأكاديمية</p><h1>إدارة المدربين</h1><p class="welcome-subtitle">ادعُ المدرب ببريده الإلكتروني، ثم عيّنه إلى فئته في جدول التدريبات.</p></div><button class="primary-button" data-action="new-trainer">＋ دعوة مدرب</button></section><section class="panel">${trainers.length ? `<div class="table-wrap"><table><thead><tr><th>المدرب</th><th>البريد الإلكتروني</th><th>الحصص المسندة</th><th>الحضور اليوم</th></tr></thead><tbody>${trainers.map(trainer => { const sessions = data.sessions.filter(session => session.coachId === trainer.id); const attended = data.trainerAttendance.some(record => record.trainerId === trainer.id && record.isoDate === localDateString() && record.status === "حاضر"); return `<tr><td>${escapeHtml(trainer.name)}</td><td>${escapeHtml(trainer.email || "—")}</td><td>${arabicDigits(sessions.length)} حصة</td><td><span class="subscription-badge ${attended ? "status-active" : "status-soon"}">${attended ? "حاضر" : "لم يسجل بعد"}</span></td></tr>`; }).join("")}</tbody></table></div>` : '<div class="empty-state"><p>أضف حسابات المدربين أولًا لإسناد الحصص إليهم.</p></div>'}</section>`;
 }
 
 function openTrainerForm() {
   if (currentUser?.role !== "coach") { showToast("إدارة حسابات المدربين من صلاحية المشرف فقط."); return; }
-  openModal("إضافة مدرب إلى الأكاديمية", `<label>اسم المدرب<input name="name" required maxlength="80" placeholder="اسم المدرب بالكامل"></label><label>اسم المستخدم<input name="username" required minlength="3" autocomplete="off" placeholder="اسم الدخول للمدرب"></label><label>كلمة المرور<input name="password" type="text" required minlength="6" autocomplete="off" placeholder="٦ أحرف على الأقل"></label><p class="modal-explainer">ستظهر كلمة المرور التي تدخلها لتتمكن من مراجعتها قبل إنشاء الحساب. يدخل المدرب من نموذج تسجيل الدخول المعتاد، ولا يمكنه تأكيد التحويلات أو تسجيل الحضور بدلًا من المشرف.</p>`, "إنشاء حساب المدرب", form => saveTrainer(form), "إدارة المدربين");
+  openModal("إعداد حساب مدرب", `<label>اسم المدرب<input name="name" required maxlength="80" placeholder="اسم المدرب بالكامل"></label><label>البريد الإلكتروني للمدرب<input name="email" type="email" required placeholder="name@example.com"></label><p class="modal-explainer">أنشئ حساب Firebase Authentication لهذا البريد من لوحة Firebase قبل أن يسجل المدرب دخوله. يُفعّل حسابه بدور مدرب بعد تسجيل الدخول.</p>`, "حفظ إعداد المدرب", form => saveTrainer(form), "إدارة المدربين");
 }
 
 function openPlayerForm() {
+  openPlayerFormFor();
+}
+
+function openPlayerFormFor(player = null) {
+  const isExistingPlayer = Boolean(player);
   if (currentUser?.role !== "guardian") { showToast("إضافة لاعب متاحة من حساب ولي الأمر فقط."); return; }
   if (!data.workDays.length) { showToast("لم يحدد المشرف أيام عمل الأكاديمية بعد."); return; }
-  openModal("إضافة لاعب إلى حساب ولي الأمر", `<label>اسم اللاعب<input name="name" required maxlength="80" placeholder="اسم اللاعب بالكامل"></label><fieldset class="registration-birth-date"><legend>تاريخ ميلاد اللاعب</legend><div class="birth-date-fields"><label>اليوم<input name="birthDay" type="text" inputmode="numeric" pattern="[0-9٠-٩]{1,2}" maxlength="2" required placeholder="يوم"></label><label>الشهر<input name="birthMonth" type="text" inputmode="numeric" pattern="[0-9٠-٩]{1,2}" maxlength="2" required placeholder="شهر"></label><label>السنة<input name="birthYear" type="text" inputmode="numeric" pattern="[0-9٠-٩]{4}" maxlength="4" required placeholder="سنة"></label></div></fieldset><fieldset class="registration-days"><legend>أيام حضور اللاعب أسبوعيًا</legend><div class="day-choice-grid">${dayCheckboxes(data.workDays)}</div></fieldset><p class="modal-explainer">سيُنشأ كود رقمي ثابت للاعب تلقائيًا. يعرضه اللاعب للمشرف لتسجيل حضوره.</p>`, "حفظ اللاعب", form => savePlayer(form), "حساب ولي الأمر");
+  const title = isExistingPlayer ? "استكمال بيانات اللاعب" : "إضافة لاعب إلى حساب ولي الأمر";
+  const nameField = `<label>اسم اللاعب<input name="name" required minlength="2" maxlength="80" ${isExistingPlayer ? "readonly" : ""} value="${escapeHtml(player?.name || "")}" placeholder="اسم اللاعب بالكامل"></label>`;
+  openModal(title, `${nameField}<fieldset class="registration-birth-date"><legend>تاريخ ميلاد اللاعب</legend><div class="birth-date-fields"><label>اليوم<input name="birthDay" type="text" inputmode="numeric" pattern="[0-9٠-٩]{1,2}" maxlength="2" required placeholder="يوم"></label><label>الشهر<input name="birthMonth" type="text" inputmode="numeric" pattern="[0-9٠-٩]{1,2}" maxlength="2" required placeholder="شهر"></label><label>السنة<input name="birthYear" type="text" inputmode="numeric" pattern="[0-9٠-٩]{4}" maxlength="4" required placeholder="سنة"></label></div></fieldset><fieldset class="registration-days"><legend>أيام حضور اللاعب أسبوعيًا</legend><div class="day-choice-grid">${dayCheckboxes(data.workDays, player?.weeklyDays || [])}</div></fieldset><p class="modal-explainer">${isExistingPlayer ? `كود اللاعب ${escapeHtml(player.playerCode)} ثابت ولن يتغير.` : "سيُنشأ كود رقمي ثابت للاعب تلقائيًا. يعرضه اللاعب للمشرف لتسجيل حضوره."}</p>`, isExistingPlayer ? "حفظ البيانات" : "حفظ اللاعب", form => savePlayer(form, player?.id), "حساب ولي الأمر");
 }
 
 function openPlayerCodeLogin() {
-  openModal("دخول اللاعب بكود الحضور", `<label>كود اللاعب الرقمي<input name="playerCode" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required placeholder="أدخل الكود المكوّن من ٦ أرقام"></label><p class="modal-explainer">كود اللاعب ثابت، ويستخدم للدخول إلى حساب اللاعب ولتسجيل الحضور بواسطة المشرف.</p>`, "دخول اللاعب", form => {
+  openModal("دخول اللاعب بكود الحضور", `<label>كود اللاعب الرقمي<input name="playerCode" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required placeholder="أدخل الكود المكوّن من ٦ أرقام"></label><p class="modal-explainer">كود اللاعب ثابت، ويستخدم للدخول إلى حساب اللاعب ولتسجيل الحضور بواسطة المشرف.</p>`, "دخول اللاعب", async form => {
     const code = normalizeDigits(String(form.get("playerCode")).trim());
-    const player = data.users.find(user => user.role === "member" && user.playerCode === code);
-    if (!player) { showToast("كود اللاعب غير صحيح."); return; }
-    closeModal();
-    signIn(player);
+    const firebase = await window.firebaseReady;
+    authFlowInProgress = true;
+    try {
+      const player = await firebase.signInWithPlayerCode(code);
+      await activateCloudProfile(player);
+      closeModal();
+    } finally {
+      authFlowInProgress = false;
+    }
   }, "دخول اللاعب");
 }
 
-function savePlayer(form) {
+async function savePlayer(form, playerId = null) {
   if (currentUser?.role !== "guardian") { showToast("إضافة لاعب متاحة من حساب ولي الأمر فقط."); return; }
   const name = String(form.get("name")).trim();
   const day = Number(normalizeDigits(String(form.get("birthDay")).trim()));
@@ -588,33 +663,45 @@ function savePlayer(form) {
   }
   if (!weeklyDays.length) { showToast("اختر يوم تدريب واحدًا على الأقل للاعب."); return; }
   const guardian = currentUser;
+  const existingPlayer = playerId ? data.users.find(user => user.id === playerId && user.role === "member" && user.guardianId === guardian.id) : null;
+  if (playerId && !existingPlayer) { showToast("لم يتم العثور على اللاعب في حساب ولي الأمر."); return; }
   const user = {
-    id: crypto.randomUUID(), role: "member", guardianId: guardian.id,
-    playerCode: createPlayerCode(), joinedAt: new Date().toISOString(),
+    ...(existingPlayer || {}),
+    id: existingPlayer?.id || crypto.randomUUID(), role: "member", guardianId: guardian.id,
+    playerCode: existingPlayer?.playerCode || "", joinedAt: existingPlayer?.joinedAt || new Date().toISOString(),
     name, birthDate, guardian: guardian.name, guardianPhone: guardian.guardianPhone,
     whatsappPhone: guardian.whatsappPhone, category: playerCategoryForBirthDate(birthDate),
     weeklyDays, weeklyDaysCount: weeklyDays.length, plan: weeklyDays.length,
-    sessionsLeft: 0, sessionsUsed: 0, subscriptionEnd: null
+    sessionsLeft: existingPlayer?.sessionsLeft || 0, sessionsUsed: existingPlayer?.sessionsUsed || 0,
+    subscriptionEnd: existingPlayer?.subscriptionEnd || null
   };
-  data.users.push(user);
-  if (!saveData()) { data.users.pop(); return; }
-  selectedPlayerId = user.id;
+  const firebase = await window.firebaseReady;
+  const savedUser = existingPlayer
+    ? await firebase.updatePlayer(user)
+    : await firebase.createPlayer(user, new Set(data.users.map(existing => existing.playerCode).filter(Boolean)));
+  const previousUser = existingPlayer ? { ...existingPlayer } : null;
+  if (existingPlayer) Object.assign(existingPlayer, savedUser);
+  else data.users.push(savedUser);
+  if (!saveData()) {
+    if (existingPlayer) Object.assign(existingPlayer, previousUser);
+    else data.users.pop();
+    throw new Error("تم الحفظ في Firestore لكن تعذر تحديث التخزين المحلي. أعد تحميل الصفحة للتحقق من البيانات.");
+  }
+  selectedPlayerId = savedUser.id;
   closeModal();
   renderView();
-  showToast(`تمت إضافة ${name}. كود اللاعب ${user.playerCode} ثابت لهذا الحساب.`);
+  showToast(existingPlayer ? `تم استكمال بيانات ${name} مع الحفاظ على كوده ${savedUser.playerCode}.` : `تمت إضافة ${name}. كود اللاعب ${savedUser.playerCode} ثابت لهذا الحساب.`);
 }
 
-function saveTrainer(form) {
-  if (currentUser?.role !== "coach") { showToast("إضافة مدرب متاحة للمشرف فقط."); return; }
+async function saveTrainer(form) {
+  if (currentUser?.role !== "coach") { showToast("دعوة المدربين متاحة للمشرف فقط."); return; }
   const name = String(form.get("name")).trim();
-  const username = String(form.get("username")).trim();
-  const password = String(form.get("password"));
-  if (name.length < 2 || username.length < 3 || password.length < 6) { showToast("أدخل اسم المدرب واسم مستخدم وكلمة مرور صحيحة."); return; }
-  if (data.users.some(user => user.username?.toLocaleLowerCase("ar") === username.toLocaleLowerCase("ar"))) { showToast("اسم المستخدم مستخدم بالفعل."); return; }
-  const trainer = { id: crypto.randomUUID(), role: "trainer", name, username, password, joinedAt: new Date().toISOString() };
-  data.users.push(trainer);
-  if (saveData()) { closeModal(); renderView(); showToast(`تم إنشاء حساب المدرب ${name}.`); }
-  else data.users.pop();
+  const email = String(form.get("email")).trim().toLowerCase();
+  if (name.length < 2 || !email) { showToast("أدخل اسم المدرب وبريده الإلكتروني."); return; }
+  const firebase = await window.firebaseReady;
+  await firebase.createTrainerInvite(email, name);
+  closeModal();
+  showToast(`تم حفظ تهيئة ${name}. أنشئ حساب بريده في Firebase Authentication قبل تسجيل دخوله.`);
 }
 
 function supervisorTrainerAttendanceView() {
@@ -710,8 +797,17 @@ function deleteExpense(expenseId) {
   if (index < 0) { showToast("لم يتم العثور على المصروف."); return; }
   if (!window.confirm("هل تريد حذف هذا المصروف من الحسابات؟")) return;
   const [expense] = data.expenses.splice(index, 1);
-  if (saveData()) { renderView(); showToast("تم حذف المصروف وإعادة حساب صافي الربح."); }
-  else data.expenses.splice(index, 0, expense);
+  if (saveData()) {
+    window.firebaseReady.then(firebase => firebase.deleteRecord("expenses", expense.id)).then(() => {
+      renderView();
+      showToast("تم حذف المصروف وإعادة حساب صافي الربح.");
+    }).catch(error => {
+      data.expenses.splice(index, 0, expense);
+      saveLocalData();
+      console.error("تعذر حذف المصروف من Firestore.", error);
+      showToast("تعذر حذف المصروف سحابيًا. لم يتم حذف السجل.");
+    });
+  } else data.expenses.splice(index, 0, expense);
 }
 
 function coachAttendanceView() {
@@ -903,8 +999,9 @@ function registerPlayerAttendance(player, session, dateTime = new Date()) {
   const status = !isScheduled ? "معذور" : attendanceStatus(session, isoDate, timestamp, player);
   const paid = isPaidMember(player);
   const record = {
-    id: crypto.randomUUID(), playerId: player.id, playerName: player.name, sessionId: session.id,
+    id: crypto.randomUUID(), playerId: player.id, playerCode: player.playerCode, playerName: player.name, sessionId: session.id,
     sessionTitle: session.title, sessionTime: session.time, guardianPhone: player.guardianPhone,
+    ...(currentUser?.role === "trainer" ? { trainerId: currentUser.id } : {}),
     timestamp, markedAt: Date.now(), isoDate, date: egyptianDate.format(dateTime),
     registeredAt: `${String(dateTime.getHours()).padStart(2, "0")}:${String(dateTime.getMinutes()).padStart(2, "0")}`,
     status, attendedUnpaid: !paid, unpaidException: !paid && status !== "غائب"
@@ -964,8 +1061,9 @@ function saveAttendanceRoster(form) {
     const status = selected === "غائب" && isScheduled ? "غائب" : !isScheduled ? "معذور" : attendanceStatus(session, isoDate, timestamp, user);
     const paid = status !== "غائب" && isPaidMember(user);
     const record = {
-      id: crypto.randomUUID(), playerId: user.id, playerName: user.name, sessionId: session.id,
+      id: crypto.randomUUID(), playerId: user.id, playerCode: user.playerCode, playerName: user.name, sessionId: session.id,
       sessionTitle: session.title, sessionTime: session.time, guardianPhone: user.guardianPhone,
+      ...(currentUser?.role === "trainer" ? { trainerId: currentUser.id } : {}),
       timestamp, markedAt: Date.now(), isoDate, date: egyptianDate.format(new Date(`${isoDate}T12:00:00`)),
       registeredAt: status === "غائب" ? "" : timeText, status, attendedUnpaid: status !== "غائب" && !paid,
       unpaidException: status !== "غائب" && !paid
@@ -997,7 +1095,7 @@ function coachPlayersView() {
   const guardians = data.users.filter(user => user.role === "guardian");
   const guardianRows = guardians.map(guardian => {
     const children = childrenForGuardian(guardian.id);
-    return `<tr><td>${escapeHtml(guardian.name)}</td><td>${escapeHtml(guardian.guardianPhone || "—")}<br>${escapeHtml(guardian.whatsappPhone || "—")}</td><td>${escapeHtml(guardian.username || "—")}</td><td>${children.map(child => `${escapeHtml(child.name)} · ${escapeHtml(child.birthDate || "—")} · كود ${escapeHtml(child.playerCode)}`).join("<br>") || "لا يوجد لاعبون"}</td><td><button class="small-action danger-action" data-action="delete-guardian" data-guardian="${escapeHtml(guardian.id)}">حذف ولي الأمر وأبنائه</button></td></tr>`;
+    return `<tr><td>${escapeHtml(guardian.name)}</td><td>${escapeHtml(guardian.guardianPhone || "—")}<br>${escapeHtml(guardian.whatsappPhone || "—")}</td><td>${escapeHtml(guardian.email || "—")}</td><td>${children.map(child => `${escapeHtml(child.name)} · ${escapeHtml(child.birthDate || "—")} · كود ${escapeHtml(child.playerCode)}`).join("<br>") || "لا يوجد لاعبون"}</td><td><button class="small-action danger-action" data-action="delete-guardian" data-guardian="${escapeHtml(guardian.id)}">حذف ولي الأمر وأبنائه</button></td></tr>`;
   }).join("");
   const playerRows = users.map(user => {
     const state = subscriptionState(user);
@@ -1015,10 +1113,10 @@ function coachPlayersView() {
     const cashRemaining = Math.max(0, priceSummary(user.weeklyDays?.length || user.weeklyDaysCount).plan.price - cashPartial);
     return `<tr><td class="player-code">${escapeHtml(user.playerCode)}</td><td>${escapeHtml(user.name)}<small class="table-subtext">${escapeHtml(guardian?.name || user.guardian || "")}</small></td><td>${escapeHtml(user.birthDate || "—")}<br>${escapeHtml(user.category)}</td><td>${escapeHtml((user.weeklyDays || []).join("، ") || "لم يختر")}<br>${schedules || "لا توجد مجموعة مرشحة"}</td><td>${arabicDigits(totalPaid)} ج.م${cashPartial ? `<small class="table-subtext">دفع نقدًا ${arabicDigits(cashPartial)} ج.م · المتبقي ${arabicDigits(cashRemaining)} ج.م لإكمال الاشتراك</small>` : ""}</td><td>${latestPayment ? `${escapeHtml(paymentMethodLabel(latestPayment))} · ${escapeHtml(latestPayment.date || "—")} · ${escapeHtml(latestPayment.paidTime || "—")}` : "لا توجد دفعات مؤكدة"}</td><td>${user.subscriptionEnd ? egyptianDate.format(new Date(`${user.subscriptionEnd}T12:00:00`)) : "غير مفعّل"}<br><span class="subscription-badge ${state.className}">${state.label}</span><br>متبقي ${arabicDigits(user.sessionsLeft || 0)} تمرين</td><td><button class="small-action" data-action="cash-payment" data-player="${escapeHtml(user.id)}" ${canRequestPayment(user) ? "" : "disabled"}>تسجيل دفع نقدي</button>${state.label === "منتهي" ? guardianWhatsApp(user, expiredMessage, "إشعار انتهاء الاشتراك") : ""}</td></tr>`;
   }).join("");
-  return `<section class="page-intro"><div><p class="eyebrow">متابعة الحسابات والاشتراكات</p><h1>أولياء الأمور واللاعبون</h1><p class="welcome-subtitle">تظهر بيانات اللاعب وتاريخ ميلاده ومواعيده ومجموع ما دفعه. حذف الحساب لا يحذف السجلات المالية.</p></div></section><section class="panel"><div class="panel-heading"><div><h2>حسابات أولياء الأمور</h2><p>${arabicDigits(guardians.length)} ولي أمر · الحذف يزيل ولي الأمر وأطفاله فقط، وتبقى السجلات المالية محفوظة.</p></div></div>${guardians.length ? `<div class="table-wrap"><table><thead><tr><th>ولي الأمر</th><th>الهاتف / واتساب</th><th>اسم المستخدم</th><th>اللاعبون</th><th>إجراء الحساب</th></tr></thead><tbody>${guardianRows}</tbody></table></div>` : '<div class="empty-state"><p>لا توجد حسابات أولياء أمور بعد.</p></div>'}</section><section class="panel"><div class="panel-heading"><div><h2>سجل اللاعبين والاشتراكات</h2><p>كل الدفعات تبقى مسجلة ولا يمكن حذفها من سجل الدفع.</p></div></div>${users.length ? `<div class="table-wrap"><table><thead><tr><th>كود اللاعب</th><th>اللاعب / ولي الأمر</th><th>تاريخ الميلاد والفئة</th><th>أيام التدريب والمواعيد</th><th>إجمالي ما دفع</th><th>آخر دفعة: الطريقة والتاريخ والوقت</th><th>الانتهاء والحالة</th><th>إجراء</th></tr></thead><tbody>${playerRows}</tbody></table></div>` : '<div class="empty-state"><p>لا يوجد لاعبون مسجلون بعد.</p></div>'}</section>`;
+  return `<section class="page-intro"><div><p class="eyebrow">متابعة الحسابات والاشتراكات</p><h1>أولياء الأمور واللاعبون</h1><p class="welcome-subtitle">تظهر بيانات اللاعب وتاريخ ميلاده ومواعيده ومجموع ما دفعه. حذف الحساب لا يحذف السجلات المالية.</p></div></section><section class="panel"><div class="panel-heading"><div><h2>حسابات أولياء الأمور</h2><p>${arabicDigits(guardians.length)} ولي أمر · الحذف يزيل ولي الأمر وأطفاله فقط، وتبقى السجلات المالية محفوظة.</p></div></div>${guardians.length ? `<div class="table-wrap"><table><thead><tr><th>ولي الأمر</th><th>الهاتف / واتساب</th><th>البريد الإلكتروني</th><th>اللاعبون</th><th>إجراء الحساب</th></tr></thead><tbody>${guardianRows}</tbody></table></div>` : '<div class="empty-state"><p>لا توجد حسابات أولياء أمور بعد.</p></div>'}</section><section class="panel"><div class="panel-heading"><div><h2>سجل اللاعبين والاشتراكات</h2><p>كل الدفعات تبقى مسجلة ولا يمكن حذفها من سجل الدفع.</p></div></div>${users.length ? `<div class="table-wrap"><table><thead><tr><th>كود اللاعب</th><th>اللاعب / ولي الأمر</th><th>تاريخ الميلاد والفئة</th><th>أيام التدريب والمواعيد</th><th>إجمالي ما دفع</th><th>آخر دفعة: الطريقة والتاريخ والوقت</th><th>الانتهاء والحالة</th><th>إجراء</th></tr></thead><tbody>${playerRows}</tbody></table></div>` : '<div class="empty-state"><p>لا يوجد لاعبون مسجلون بعد.</p></div>'}</section>`;
 }
 
-function deleteGuardian(guardianId) {
+async function deleteGuardian(guardianId) {
   if (currentUser?.role !== "coach") { showToast("حذف الحسابات متاح للمشرف فقط."); return; }
   const guardian = data.users.find(user => user.id === guardianId && user.role === "guardian");
   if (!guardian) { showToast("لم يتم العثور على حساب ولي الأمر."); return; }
@@ -1026,8 +1124,19 @@ function deleteGuardian(guardianId) {
   if (!window.confirm(`حذف حساب ${guardian.name} و${children.length} من أبنائه؟ سيبقى سجل الحضور والمدفوعات محفوظًا.`)) return;
   const deletedUsers = data.users.filter(user => user.id === guardian.id || user.guardianId === guardian.id);
   data.users = data.users.filter(user => user.id !== guardian.id && user.guardianId !== guardian.id);
-  if (saveData()) { renderView(); showToast("تم حذف الحساب واللاعبين مع الإبقاء على سجلات الحضور والمدفوعات."); }
-  else data.users.push(...deletedUsers);
+  if (!saveData()) { data.users.push(...deletedUsers); return; }
+  try {
+    const firebase = await window.firebaseReady;
+    await firebase.deleteGuardian(guardian, children);
+  } catch (error) {
+    data.users.push(...deletedUsers);
+    saveData();
+    console.error("تعذر حذف حساب ولي الأمر من Firestore.", error);
+    showToast(error instanceof Error ? error.message : "تعذر حذف الحساب من Firestore.");
+    return;
+  }
+  renderView();
+  showToast("تم حذف الحساب واللاعبين من Firestore مع الإبقاء على سجلات الحضور والمدفوعات.");
 }
 
 function coachPaymentsView() {
@@ -1049,6 +1158,7 @@ function openModal(title, fields, submitLabel, submitAction, kicker = "الات�
     const form = event.currentTarget;
     const submitButton = form.querySelector('button[type="submit"]');
     submitButton.disabled = true;
+    authFlowInProgress = true;
     try {
       await submitAction(new FormData(form));
     } catch (error) {
@@ -1083,10 +1193,7 @@ function compressReceipt(file) {
         URL.revokeObjectURL(objectUrl);
         canvas.toBlob(blob => {
           if (!blob) { reject(new Error("تعذر تجهيز صورة الإيصال.")); return; }
-          const reader = new FileReader();
-          reader.onload = () => resolve(String(reader.result));
-          reader.onerror = () => reject(new Error("تعذر قراءة صورة الإيصال."));
-          reader.readAsDataURL(blob);
+          resolve(blob);
         }, "image/jpeg", 0.76);
       } catch (error) {
         URL.revokeObjectURL(objectUrl);
@@ -1117,11 +1224,26 @@ function requestPayment(planId) {
   openModal("تسجيل تحويل ومراجعة الإيصال", `<p class="modal-explainer">الباقة: ${plan.name} · المبلغ المستحق: ${arabicDigits(plan.price)} ج.م. طريقة الدفع الوحيدة: إنستا باي / محفظة بنكية. أرفق صورة التحويل وأدخل رقم العملية كما يظهر في التطبيق. لن يتفعّل الاشتراك قبل تأكيد الأكاديمية.</p><p class="payment-warning">ولي الأمر أو اللاعب: تأكد من التحويل إلى بيانات الأكاديمية الصحيحة. الأكاديمية غير مسؤولة عن أي تحويل خاطئ.</p><label>رقم التحويل / مرجع العملية<input name="reference" required minlength="4" placeholder="رقم العملية كما يظهر في التطبيق"></label><div class="payment-destination"><span>رقم التحويل إلى الأكاديمية</span><strong>${escapeHtml(data.instaPayAddress)}</strong></div><label>صورة إيصال التحويل<input name="receipt" type="file" accept="image/*" required></label><label>المبلغ المحوّل<input name="amount" type="number" value="${plan.price}" readonly></label>`, "إرسال للمراجعة", async form => {
     const reference = String(form.get("reference")).trim();
     if (reference.length < 4) { showToast("أدخل رقم التحويل الصحيح."); return; }
-    const receiptImage = await compressReceipt(form.get("receipt"));
-    const payment = { id: crypto.randomUUID(), playerId: player.id, playerName: player.name, planId, planName: plan.name, amount: Number(form.get("amount")), reference, receiptImage, method: "instapay", methodLabel: "إنستا باي / محفظة بنكية", status: "بانتظار المراجعة", createdAt: Date.now(), date: egyptianDate.format(new Date()) };
+    if (currentUser.role !== "guardian") { showToast("ارفع إيصال الاشتراك من حساب ولي الأمر."); return; }
+    const receiptBlob = await compressReceipt(form.get("receipt"));
+    const paymentId = crypto.randomUUID();
+    const firebase = await window.firebaseReady;
+    const receipt = await firebase.uploadReceipt(currentUser.id, paymentId, receiptBlob);
+    const payment = { id: paymentId, guardianId: currentUser.id, playerId: player.id, playerName: player.name, planId, planName: plan.name, amount: Number(form.get("amount")), reference, receiptImage: receipt.url, receiptPath: receipt.path, method: "instapay", methodLabel: "إنستا باي / محفظة بنكية", status: "بانتظار المراجعة", createdAt: Date.now(), date: egyptianDate.format(new Date()) };
     data.payments.push(payment);
-    if (saveData()) { closeModal(); renderView(); showToast("تم إرسال رقم التحويل وصورة الإيصال للمراجعة."); }
-    else data.payments.pop();
+    try {
+      if (!saveLocalData()) throw new Error("تم رفع صورة الإيصال لكن تعذر حفظ الطلب محليًا.");
+      await firebase.savePayment(payment);
+      saveData();
+      closeModal();
+      renderView();
+      showToast("تم رفع الإيصال وإرسال رقم التحويل للمراجعة.");
+    } catch (error) {
+      data.payments.pop();
+      await firebase.deleteReceipt(receipt.path);
+      saveLocalData();
+      throw error;
+    }
   }, "إنستا باي");
 }
 
@@ -1328,39 +1450,119 @@ function saveCashPayment(form, playerId) {
   }
 }
 
-byId("login-form").addEventListener("submit", event => {
+byId("login-form").addEventListener("submit", async event => {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  const user = data.users.find(item => item.username?.toLocaleLowerCase("ar") === String(form.get("username")).trim().toLocaleLowerCase("ar") && item.password === form.get("password") && ["guardian", "trainer"].includes(item.role));
-  if (!user) { showToast("بيانات الدخول غير صحيحة أو الحساب غير مسجل. دخول المشرف من الزر المخصص."); return; }
-  signIn(user);
+  const submitButton = event.currentTarget.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  try {
+    const firebase = await window.firebaseReady;
+    const profile = await firebase.signIn(String(form.get("email")), String(form.get("password")));
+    if (!["guardian", "trainer"].includes(profile.role)) {
+      await firebase.signOut();
+      throw new Error("استخدم مدخل المشرف أو اللاعب المخصص لهذا الحساب.");
+    }
+    await activateCloudProfile(profile);
+  } catch (error) {
+    console.error("تعذر تسجيل الدخول.", error);
+    showToast(error instanceof Error ? error.message : "تعذر تسجيل الدخول. تحقق من البيانات وحاول مرة أخرى.");
+  } finally {
+    authFlowInProgress = false;
+    submitButton.disabled = false;
+  }
 });
 
 byId("register-form").addEventListener("submit", event => {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  const username = String(form.get("username")).trim();
-  if (data.users.some(user => user.username?.toLocaleLowerCase("ar") === username.toLocaleLowerCase("ar"))) { showToast("اسم المستخدم مستخدم بالفعل، اختر اسمًا آخر."); return; }
+  const registerForm = event.currentTarget;
+  const form = new FormData(registerForm);
+  const email = String(form.get("email")).trim().toLowerCase();
   const guardianPhone = String(form.get("guardianPhone")).replace(/\s/g, "");
   const whatsappPhone = String(form.get("whatsappPhone")).replace(/\s/g, "");
   if (!/^01\d{9}$/.test(guardianPhone)) { showToast("أدخل رقم هاتف مصري صحيحًا مكوّنًا من ١١ رقمًا."); return; }
-  if (!/^01\d{9}$/.test(whatsappPhone)) { showToast("أدخل رقم واتساب مصريًا صحيحًا مكوّنًا من ١١ رقمًا."); return; }
-  const user = { id: crypto.randomUUID(), role: "guardian", name: String(form.get("guardianName")).trim(), guardianPhone, whatsappPhone, username, password: String(form.get("password")), joinedAt: new Date().toISOString() };
-  if (user.name.length < 2 || username.length < 3 || String(form.get("password")).length < 6) { showToast("أكمل اسم ولي الأمر واسم المستخدم وكلمة المرور."); return; }
-  data.users.push(user);
-  if (!saveData()) { data.users.pop(); return; }
-  event.currentTarget.reset();
-  signIn(user);
-  showToast("تم إنشاء حساب ولي الأمر. أضف بيانات اللاعب للبدء.");
-  openPlayerForm();
+  if (!/^01\d{9}$/.test(whatsappPhone)) { showToast("أدخل رقم واتساب مصريًا مكوّنًا من ١١ رقمًا."); return; }
+  const childNames = form.getAll("childName").map(value => String(value).trim());
+  if (!childNames.length || childNames.some(name => name.length < 2 || name.length > 80)) { showToast("أدخل اسمًا صحيحًا لكل ابن."); return; }
+  const user = { role: "guardian", name: String(form.get("guardianName")).trim(), guardianPhone, whatsappPhone, email, password: String(form.get("password")), joinedAt: new Date().toISOString() };
+  if (user.name.length < 2 || !email || String(form.get("password")).length < 6) { showToast("أكمل اسم ولي الأمر والبريد الإلكتروني وكلمة المرور."); return; }
+  const players = childNames.map(name => ({
+    id: crypto.randomUUID(),
+    role: "member",
+    guardianId: user.id,
+    joinedAt: user.joinedAt,
+    name,
+    birthDate: "",
+    guardian: user.name,
+    guardianPhone,
+    whatsappPhone,
+    category: "جميع الفئات العمرية",
+    weeklyDays: [],
+    weeklyDaysCount: 0,
+    plan: 0,
+    sessionsLeft: 0,
+    sessionsUsed: 0,
+    subscriptionEnd: null
+  }));
+  const submitButton = registerForm.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  authFlowInProgress = true;
+  (async () => {
+    try {
+      const firebase = await window.firebaseReady;
+      const registration = await firebase.registerGuardian(user, players);
+      registerForm.reset();
+      byId("child-name-list").innerHTML = '<div class="child-name-row"><label>اسم الابن<input name="childName" required minlength="2" maxlength="80" placeholder="اسم الابن بالكامل"></label></div>';
+      await activateCloudProfile(registration.profile);
+      showToast("تم إنشاء حساب ولي الأمر وحفظ بيانات الأبناء وأكوادهم في Firestore.");
+    } catch (error) {
+      console.error("تعذر إنشاء حساب ولي الأمر أو حفظ بيانات الأبناء.", error);
+      showToast(error instanceof Error ? error.message : "تعذر حفظ التسجيل في Firestore. حاول مرة أخرى.");
+    } finally {
+      authFlowInProgress = false;
+      if (submitButton.isConnected) submitButton.disabled = false;
+    }
+  })();
+});
+
+byId("add-child-name").addEventListener("click", () => {
+  const row = document.createElement("div");
+  row.className = "child-name-row";
+  row.innerHTML = '<label>اسم الابن<input name="childName" required minlength="2" maxlength="80" placeholder="اسم الابن بالكامل"></label><button type="button" class="remove-child-button" data-remove-child aria-label="حذف اسم الابن">×</button>';
+  byId("child-name-list").append(row);
+  row.querySelector("input").focus();
+});
+
+byId("child-name-list").addEventListener("click", event => {
+  if (!(event.target instanceof Element) || !event.target.closest("[data-remove-child]")) return;
+  event.target.closest(".child-name-row").remove();
+  const rows = byId("child-name-list").querySelectorAll(".child-name-row");
+  if (rows.length === 1) rows[0].querySelector("[data-remove-child]")?.remove();
 });
 
 byId("player-code-entry").addEventListener("click", openPlayerCodeLogin);
 byId("coach-form").addEventListener("submit", event => {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  if (String(form.get("password")) !== COACH_PASSWORD) { showToast("كلمة مرور المشرف غير صحيحة."); return; }
-  signIn({ id: "coach-hazem", role: "coach", name: OWNER_NAME });
+  const submitButton = event.currentTarget.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  authFlowInProgress = true;
+  (async () => {
+    try {
+      const firebase = await window.firebaseReady;
+      const profile = await firebase.signInCoach(normalizeDigits(String(form.get("password"))));
+      if (profile.role !== "coach") {
+        await firebase.signOut();
+        throw new Error("هذا الحساب غير مسجل بدور مشرف الأكاديمية.");
+      }
+      await activateCloudProfile(profile);
+    } catch (error) {
+      console.error("تعذر تسجيل دخول المشرف.", error);
+      showToast(error instanceof Error ? error.message : "تعذر تسجيل الدخول. تحقق من البيانات.");
+    } finally {
+      authFlowInProgress = false;
+      submitButton.disabled = false;
+    }
+  })();
 });
 
 document.querySelectorAll(".auth-tab").forEach(tab => tab.addEventListener("click", () => setAuthTab(tab.dataset.authTab)));
@@ -1404,6 +1606,10 @@ document.addEventListener("click", event => {
     if (player) requestPayment(player.weeklyDays.length || player.weeklyDaysCount);
   }
   if (action.dataset.action === "new-player") openPlayerForm();
+  if (action.dataset.action === "complete-player") {
+    const player = data.users.find(user => user.id === action.dataset.player && user.role === "member" && user.guardianId === currentUser.id);
+    if (player) openPlayerFormFor(player);
+  }
   if (action.dataset.action === "new-session") {
     openSessionForm();
   }
@@ -1417,7 +1623,17 @@ document.addEventListener("click", event => {
     if (!session) { showToast("لم يتم العثور على موعد التدريب."); return; }
     if (!window.confirm(`هل تريد حذف حصة ${session.title} أيام ${sessionDays(session).join("، ")}؟`)) return;
     data.sessions = data.sessions.filter(item => item.id !== session.id);
-    if (saveData()) { renderView(); showToast("تم حذف موعد التدريب."); }
+    if (saveData()) {
+      window.firebaseReady.then(firebase => firebase.deleteRecord("sessions", session.id)).then(() => {
+        renderView();
+        showToast("تم حذف موعد التدريب.");
+      }).catch(error => {
+        data.sessions.push(session);
+        saveLocalData();
+        console.error("تعذر حذف موعد التدريب من Firestore.", error);
+        showToast("تعذر حذف الموعد سحابيًا. لم يتم حذف السجل.");
+      });
+    }
   }
   if (action.dataset.action === "take-attendance") openAttendanceRoster(action.dataset.session);
   if (action.dataset.action === "code-attendance") openCodeAttendanceForm();
@@ -1546,7 +1762,23 @@ document.addEventListener("keydown", event => {
 byId("modal-close").addEventListener("click", closeModal);
 byId("action-modal").addEventListener("click", event => { if (event.target === byId("action-modal")) closeModal(); });
 byId("portal-menu").addEventListener("click", () => byId("portal-sidebar").classList.toggle("open"));
-byId("logout-button").addEventListener("click", () => { currentUser = null; selectedPlayerId = null; showAuth(); });
+async function logOut() {
+  try {
+    await cloudWriteQueue;
+    const firebase = await window.firebaseReady;
+    await firebase.signOut();
+    cloudProfile = null;
+    currentUser = null;
+    selectedPlayerId = null;
+    showAuth();
+  } catch (error) {
+    console.error("تعذر تسجيل الخروج من Firebase Authentication.", error);
+    showToast("تعذر تسجيل الخروج. حاول مرة أخرى.");
+  }
+}
+
+byId("logout-button").addEventListener("click", logOut);
+byId("profile-button").addEventListener("click", logOut);
 byId("portal-notifications").addEventListener("click", () => {
   if (currentUser.role === "coach") {
     const pending = data.payments.filter(payment => payment.status === "بانتظار المراجعة").length;
@@ -1563,4 +1795,30 @@ byId("portal-notifications").addEventListener("click", () => {
     showToast(notices.length ? notices[0] : "لا توجد تنبيهات جديدة. تابع جدول تدريباتك.");
   }
 });
-byId("profile-button").addEventListener("click", () => { currentUser = null; selectedPlayerId = null; showAuth(); });
+
+window.firebaseReady.then(firebase => {
+  firebase.observeAuth(async user => {
+    if (!user || user.isAnonymous || currentUser || authFlowInProgress) return;
+    try {
+      const profile = await firebase.currentProfile(user);
+      if (!profile) {
+        await firebase.signOut();
+        showAuth();
+        showToast("هذا البريد غير مسجل بدور في الأكاديمية. تواصل مع المشرف.");
+        return;
+      }
+      await activateCloudProfile(profile);
+    } catch (error) {
+      console.error("تعذر استعادة جلسة Firebase.", error);
+      showAuth();
+      showToast("تعذر تحميل الحساب من Firebase. أعد تسجيل الدخول.");
+    }
+  });
+
+  window.addEventListener("online", () => {
+    if (cloudProfile) queueCloudSave(JSON.parse(JSON.stringify(data)), cloudProfile);
+  });
+}).catch(error => {
+  console.error("تعذر تحميل Firebase.", error);
+  showToast("تعذر الاتصال بخدمات Firebase. تحقق من الاتصال وإعدادات المشروع.");
+});

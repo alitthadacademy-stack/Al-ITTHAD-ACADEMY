@@ -1,0 +1,23 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isCoach() {
+      return signedIn()
+        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'coach';
+    }
+
+    match /receipts/{guardianId}/{fileName} {
+      allow read: if isCoach() || (signedIn() && request.auth.uid == guardianId);
+      allow create: if signedIn()
+        && request.auth.uid == guardianId
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType == 'image/jpeg';
+      allow update: if false;
+      allow delete: if isCoach() || (signedIn() && request.auth.uid == guardianId);
+    }
+  }
+}

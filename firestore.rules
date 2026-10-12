@@ -1,0 +1,176 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userProfile(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data;
+    }
+
+    function isCoach() {
+      return signedIn() && userProfile(request.auth.uid).role == 'coach';
+    }
+
+    function isGuardian() {
+      return signedIn() && userProfile(request.auth.uid).role == 'guardian';
+    }
+
+    function isTrainer() {
+      return signedIn() && userProfile(request.auth.uid).role == 'trainer';
+    }
+
+    function isMember() {
+      return signedIn()
+        && request.auth.token.firebase.sign_in_provider == 'anonymous'
+        && exists(/databases/$(database)/documents/playerSessions/$(request.auth.uid));
+    }
+
+    function memberPlayerId() {
+      return get(/databases/$(database)/documents/players/$(get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode)).data.id;
+    }
+
+    function invitedTrainer(uid) {
+      return signedIn()
+        && request.resource.data.role == 'trainer'
+        && request.resource.data.email == request.auth.token.email
+        && exists(/databases/$(database)/documents/trainerInvites/$(request.auth.token.email));
+    }
+
+    function trainerOwnsSession(sessionId) {
+      return exists(/databases/$(database)/documents/sessions/$(sessionId))
+        && get(/databases/$(database)/documents/sessions/$(sessionId)).data.coachId == request.auth.uid;
+    }
+
+    match /users/{uid} {
+      allow read: if isCoach() || (signedIn() && request.auth.uid == uid);
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && ((request.resource.data.role == 'guardian'
+          && request.resource.data.email == request.auth.token.email)
+          || invitedTrainer(uid));
+      allow update: if isCoach()
+        || (isGuardian() && request.auth.uid == uid
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.email == resource.data.email);
+      allow delete: if isCoach();
+    }
+
+    match /players/{playerCode} {
+      allow get: if isCoach()
+        || (isTrainer() && request.auth.uid in resource.data.assignedTrainerIds)
+        || (isGuardian() && (!exists(/databases/$(database)/documents/players/$(playerCode))
+          || resource.data.guardianId == request.auth.uid))
+        || (isMember() && get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode == playerCode);
+      allow list: if isCoach()
+        || (isTrainer() && request.auth.uid in resource.data.assignedTrainerIds)
+        || (isGuardian() && resource.data.guardianId == request.auth.uid);
+      allow create: if isGuardian() && request.resource.data.guardianId == request.auth.uid;
+      allow update: if isCoach()
+        || (isGuardian() && resource.data.guardianId == request.auth.uid
+          && request.resource.data.guardianId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['birthDate', 'category', 'weeklyDays', 'weeklyDaysCount', 'plan', 'selectedSessionIds', 'updatedAt']))
+        || (isMember()
+          && get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode == playerCode
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['weeklyDays', 'weeklyDaysCount', 'plan', 'selectedSessionIds', 'updatedAt']))
+        || (isTrainer()
+          && request.resource.data.id == resource.data.id
+          && request.resource.data.guardianId == resource.data.guardianId
+          && request.auth.uid in resource.data.assignedTrainerIds
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['sessionsLeft', 'sessionsUsed', 'lastAttendanceId', 'updatedAt'])
+          && !exists(/databases/$(database)/documents/attendance/$(request.resource.data.lastAttendanceId))
+          && existsAfter(/databases/$(database)/documents/attendance/$(request.resource.data.lastAttendanceId))
+          && getAfter(/databases/$(database)/documents/attendance/$(request.resource.data.lastAttendanceId)).data.playerId == resource.data.id
+          && getAfter(/databases/$(database)/documents/attendance/$(request.resource.data.lastAttendanceId)).data.playerCode == playerCode
+          && getAfter(/databases/$(database)/documents/attendance/$(request.resource.data.lastAttendanceId)).data.trainerId == request.auth.uid
+          && trainerOwnsSession(getAfter(/databases/$(database)/documents/attendance/$(request.resource.data.lastAttendanceId)).data.sessionId));
+      allow delete: if isCoach();
+    }
+
+    match /playerCodes/{code} {
+      allow get: if signedIn()
+        && (request.auth.token.firebase.sign_in_provider == 'anonymous' || isGuardian() || isCoach());
+      allow list: if isCoach();
+      allow create: if isGuardian()
+        && existsAfter(/databases/$(database)/documents/players/$(code))
+        && getAfter(/databases/$(database)/documents/players/$(code)).data.guardianId == request.auth.uid;
+      allow update: if false;
+      allow delete: if isCoach();
+    }
+
+    match /sessions/{sessionId} {
+      allow read: if signedIn();
+      allow write: if isCoach();
+    }
+
+    match /payments/{paymentId} {
+      allow read: if isCoach()
+        || (isGuardian() && resource.data.guardianId == request.auth.uid)
+        || (isMember() && resource.data.playerId == memberPlayerId());
+      allow create: if isGuardian()
+        && request.resource.data.guardianId == request.auth.uid
+        && request.resource.data.status == 'بانتظار المراجعة';
+      allow update, delete: if isCoach();
+    }
+
+    match /attendance/{attendanceId} {
+      allow read: if isCoach()
+        || (isGuardian() && resource.data.guardianId == request.auth.uid)
+        || (isMember() && resource.data.playerId == memberPlayerId())
+        || (isTrainer() && resource.data.trainerId == request.auth.uid);
+      allow create: if isCoach()
+        || (isTrainer() && request.resource.data.trainerId == request.auth.uid
+          && trainerOwnsSession(request.resource.data.sessionId)
+          && request.resource.data.playerCode is string
+          && exists(/databases/$(database)/documents/players/$(request.resource.data.playerCode))
+          && get(/databases/$(database)/documents/players/$(request.resource.data.playerCode)).data.id == request.resource.data.playerId
+          && request.auth.uid in get(/databases/$(database)/documents/players/$(request.resource.data.playerCode)).data.assignedTrainerIds);
+      allow update, delete: if isCoach();
+    }
+
+    match /attendanceExceptions/{exceptionId} {
+      allow read: if isCoach()
+        || (isGuardian() && resource.data.guardianId == request.auth.uid)
+        || (isMember() && resource.data.playerId == memberPlayerId());
+      allow create: if isGuardian() && request.resource.data.guardianId == request.auth.uid;
+      allow update, delete: if isCoach();
+    }
+
+    match /trainerAttendance/{recordId} {
+      allow read: if isCoach() || (isTrainer() && resource.data.trainerId == request.auth.uid);
+      allow create, update: if isCoach();
+      allow delete: if isCoach();
+    }
+
+    match /expenses/{expenseId} {
+      allow read, write: if isCoach();
+    }
+
+    match /settings/{settingId} {
+      allow read: if signedIn();
+      allow write: if isCoach();
+    }
+
+    match /trainerInvites/{email} {
+      allow read: if isCoach() || (signedIn() && request.auth.token.email == email);
+      allow create, update: if isCoach();
+      allow delete: if isCoach()
+        || (signedIn()
+          && request.auth.token.email == email
+          && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'trainer');
+    }
+
+    match /playerSessions/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn()
+        && request.auth.uid == uid
+        && request.auth.token.firebase.sign_in_provider == 'anonymous'
+        && exists(/databases/$(database)/documents/playerCodes/$(request.resource.data.playerCode));
+      allow update, delete: if false;
+    }
+  }
+}

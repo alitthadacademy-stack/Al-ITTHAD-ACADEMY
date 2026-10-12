@@ -34,29 +34,31 @@
         </div>
         <div id="member-auth">
           <div class="auth-heading"><span class="auth-kicker">أهلًا بك في فريقنا</span><h2 id="auth-title">سجّل دخولك</h2><p id="auth-subtitle">ادخل إلى حسابك لمتابعة رحلتك الرياضية.</p></div>
-          <div class="auth-tabs" role="tablist"><button type="button" class="auth-tab selected" data-auth-tab="login">تسجيل الدخول</button><button type="button" class="auth-tab" data-auth-tab="register">عضو جديد</button></div>
+          <div class="auth-tabs" role="tablist"><button type="button" class="auth-tab selected" data-auth-tab="login">تسجيل الدخول</button><button type="button" class="auth-tab" data-auth-tab="register">ولي أمر جديد</button></div>
           <form id="login-form" class="auth-form">
-            <label>اسم المستخدم<input name="username" autocomplete="username" required placeholder="اسم المستخدم"></label>
+            <label>البريد الإلكتروني<input name="email" type="email" autocomplete="email" required placeholder="name@example.com"></label>
             <label>كلمة المرور<span class="password-input"><input name="password" type="password" autocomplete="current-password" required placeholder="أدخل كلمة المرور"><button type="button" class="show-password" aria-label="إظهار كلمة المرور">◉</button></span></label>
             <button class="primary-button auth-submit" type="submit">دخول إلى حسابي <span>←</span></button>
-            <p class="form-note">ولي الأمر والمدرب: استخدم اسم المستخدم وكلمة المرور. اللاعب يمكنه الدخول بكود الحضور.</p>
+            <p class="form-note">استخدم البريد الإلكتروني وكلمة المرور. اللاعب يمكنه الدخول بكود الحضور.</p>
           </form>
           <form id="register-form" class="auth-form" hidden>
             <label>اسم ولي الأمر<input name="guardianName" autocomplete="name" required placeholder="الاسم الكامل لولي الأمر"></label>
             <div class="form-row"><label>رقم هاتف ولي الأمر<input name="guardianPhone" type="tel" inputmode="tel" required placeholder="01xxxxxxxxx"></label><label>رقم واتساب ولي الأمر<input name="whatsappPhone" type="tel" inputmode="tel" required placeholder="01xxxxxxxxx"></label></div>
-            <div class="form-row"><label>اسم المستخدم<input name="username" autocomplete="username" minlength="3" required placeholder="اختر اسمًا للدخول"></label><label>كلمة المرور<span class="password-input"><input name="password" type="password" autocomplete="new-password" minlength="6" required placeholder="٦ أحرف على الأقل"><button type="button" class="show-password" aria-label="إظهار كلمة المرور">◉</button></span></label></div>
-            <p class="form-note">احفظ اسم المستخدم وكلمة المرور جيدًا؛ ستستخدمهما للدخول إلى حسابك ومتابعة لاعبيك.</p>
+            <div class="form-row"><label>البريد الإلكتروني<input name="email" type="email" autocomplete="email" required placeholder="name@example.com"></label><label>كلمة المرور<span class="password-input"><input name="password" type="password" autocomplete="new-password" minlength="6" required placeholder="٦ أحرف على الأقل"><button type="button" class="show-password" aria-label="إظهار كلمة المرور">◉</button></span></label></div>
+            <fieldset class="registration-children"><legend>أسماء الأبناء</legend><div id="child-name-list" class="child-name-list"><div class="child-name-row"><label>اسم الابن<input name="childName" required minlength="2" maxlength="80" placeholder="اسم الابن بالكامل"></label></div></div><button type="button" class="add-child-button" id="add-child-name">＋ إضافة ابن آخر</button></fieldset>
+            <p class="form-note">سيُنشأ كود رقمي فريد لكل ابن ويُحفظ مع بياناته في قاعدة بيانات الأكاديمية.</p>
+            <p class="form-note">استخدم البريد الإلكتروني وكلمة المرور للدخول إلى حسابك ومتابعة لاعبيك.</p>
             <button class="primary-button auth-submit" type="submit">إنشاء حساب ولي الأمر <span>←</span></button>
-            <p class="form-note">بعد الدخول يمكنك إضافة لاعب أو أكثر، وإدخال تاريخ ميلاد كل لاعب وأيام تدريبه.</p>
+            <p class="form-note">يمكنك استكمال تاريخ الميلاد وأيام التدريب لكل ابن بعد إنشاء الحساب.</p>
           </form>
           <button type="button" class="coach-entry" id="player-code-entry">دخول اللاعب بكود الحضور <span>← كود اللاعب</span></button>
-          <button type="button" class="coach-entry" id="coach-entry">دخول المشرف <span>← حازم الدخاخني</span></button>
+          <button type="button" class="coach-entry" id="coach-entry">دخول المشرف <span>← فريق الأكاديمية</span></button>
         </div>
         <div id="coach-auth" hidden>
           <div class="auth-heading"><span class="auth-kicker">إدارة الأكاديمية</span><h2>دخول المشرف</h2><p>حساب صاحب الأكاديمية حازم الدخاخني فقط.</p></div>
           <form id="coach-form" class="auth-form coach-form">
             <div class="coach-identity"><span class="avatar avatar-admin">ح</span><span><strong>حازم الدخاخني</strong><small>صاحب الأكاديمية والمشرف</small></span></div>
-            <label>كلمة مرور المشرف<input name="password" type="password" required placeholder="كلمة مرور المشرف"></label>
+            <label>كلمة المرور<input name="password" type="password" autocomplete="current-password" required placeholder="أدخل كلمة مرور المشرف"></label>
             <button class="primary-button auth-submit" type="submit">الدخول إلى لوحة المشرف <span>←</span></button>
           </form>
           <button type="button" class="coach-entry" id="member-entry"><span>← العودة إلى دخول الأعضاء</span></button>
@@ -98,6 +100,10 @@
 
   <div class="modal-backdrop" id="action-modal" aria-hidden="true"><section class="modal" role="dialog" aria-modal="true"><div class="modal-heading"><div><span class="modal-kicker" id="modal-kicker">الأكاديمية</span><h2 id="modal-title"></h2></div><button class="close-modal" id="modal-close" aria-label="إغلاق">×</button></div><form id="action-form"></form></section></div>
   <div class="toast" id="toast" role="status" aria-live="polite"><span>✓</span><p></p></div>
+  <script>
+    window.firebaseReady = import("./firebase.js").then(() => window.firebaseServices);
+    window.firebaseReady.catch(error => console.error("تعذر تحميل Firebase.", error));
+  </script>
   <script src="app.js"></script>
 </body>
 </html>
