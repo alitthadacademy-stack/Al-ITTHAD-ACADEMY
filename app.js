@@ -175,9 +175,10 @@ function sessionStartTimestamp(session, isoDate) {
 
 function attendanceStatus(session, isoDate, timestamp, user) {
   const weekday = weekdayForDate(isoDate);
+  if (!user.weeklyDays?.includes(weekday) || !sessionDays(session).includes(weekday)) return "معذور";
   const startsAt = sessionStartTimestamp(session, isoDate);
   if (startsAt !== null && timestamp >= startsAt + 30 * 60 * 1000) return "متأخر";
-  return user.weeklyDays?.includes(weekday) && sessionDays(session).includes(weekday) ? "حاضر" : "معذور";
+  return "حاضر";
 }
 
 function isPaidMember(user) {
@@ -422,7 +423,57 @@ function memberAttendanceView() {
   const records = data.attendance.filter(record => record.playerId === user.id).sort((a, b) => b.timestamp - a.timestamp);
   const chosenSessions = selectedSessionsForMember(user);
   const schedules = chosenSessions.length ? chosenSessions : sessionsForMember(user);
-  return `<section class="page-intro"><div><p class="eyebrow">حساب اللاعب</p><h1>الحضور والغياب</h1><p class="welcome-subtitle">تابع يوم وموعد كل حصة وحالة الحضور أو الغياب، ووقت تسجيل حضورك بدقة.</p></div></section><section class="coach-code-value player-code-panel"><span>كود اللاعب</span><strong>${escapeHtml(user.playerCode)}</strong><button class="copy-code" data-action="copy-text" data-copy="${escapeHtml(user.playerCode)}">نسخ الكود</button></section><section class="panel"><div class="panel-heading"><div><h2>مواعيد التمرين المرشحة</h2><p>كل مواعيد فئتك التي أضافها المشرف؛ الأيام المناسبة لاشتراكك مميزة.</p></div></div>${sessionCards(schedules, false, user)}</section><section class="panel"><div class="panel-heading"><div><h2>سجل الحضور والغياب</h2><p>يظهر هنا تاريخ الحصة وموعدها ووقت وصول اللاعب. يمكن طلب استثناء لتعويض غياب خلال الشهر الحالي، بعد موافقة المشرف.</p></div></div>${records.length ? `<div class="table-wrap"><table><thead><tr><th>التدريب</th><th>تاريخ الحصة وموعدها</th><th>وقت الحضور</th><th>الحالة / الاستثناء</th></tr></thead><tbody>${records.map(record => { const request = makeUpRequestFor(record); const exceptionLabel = request ? `استثناء ${request.status}` : ""; const exceptionAction = !request && canRequestMakeup(user, record) ? `<button class="small-action" data-action="request-makeup" data-attendance="${escapeHtml(record.id)}">طلب استثناء</button>` : ""; return `<tr><td>${escapeHtml(record.sessionTitle)}</td><td>${escapeHtml(record.date)} · ${escapeHtml(record.sessionTime || "—")}</td><td>${escapeHtml(record.registeredAt || "—")}</td><td><span class="subscription-badge ${record.status === "غائب" ? "status-expired" : record.status === "معذور" || record.status === "متأخر" ? "status-soon" : "status-active"}">${escapeHtml(record.status || "حاضر")}</span>${exceptionLabel ? `<small class="table-subtext">${escapeHtml(exceptionLabel)}${request.date ? ` · ${escapeHtml(request.date)} ${escapeHtml(request.time || "")} · ${escapeHtml(request.sessionTitle || "")}` : ""}</small>` : ""}${exceptionAction}</td></tr>`; }).join("")}</tbody></table></div>` : '<div class="empty-state"><p>لا توجد سجلات حضور بعد.</p></div>'}</section>`;
+  const selectedDays = WEEK_DAYS.filter(day => (user.weeklyDays || []).includes(day));
+  const today = new Date();
+  const todayIsoDate = localDateString(today);
+  const weekStart = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (today.getDay() + 1) % 7, 12);
+  const upcomingSessions = schedules
+    .filter(session => sessionDays(session).some(day => selectedDays.includes(day)))
+    .flatMap(session => {
+      const matchingDays = sessionDays(session).filter(day => selectedDays.includes(day));
+      return matchingDays.map(day => {
+        const dayIndex = WEEK_DAYS.indexOf(day);
+        const sessionDate = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + dayIndex, 12);
+        const isoDate = localDateString(sessionDate);
+        const record = records.find(item => item.sessionId === session.id && item.isoDate === isoDate);
+        const start = sessionStartTimestamp(session, isoDate);
+        const isPast = isoDate < todayIsoDate || (isoDate === todayIsoDate && start !== null && start < today.getTime());
+        const status = record?.status || (isPast ? "غائب" : isoDate === todayIsoDate ? "بانتظار التسجيل" : "موعد قادم");
+        return { day, isoDate, sessionDate, session, record, status };
+      });
+    });
+  const nextAppointment = (fromDate = today) => {
+    const candidates = [];
+    for (let offset = 0; offset <= 7; offset += 1) {
+      const date = new Date(fromDate.getFullYear(), fromDate.getMonth(), fromDate.getDate() + offset, 12);
+      const day = weekdayForDate(localDateString(date));
+      if (!selectedDays.includes(day)) continue;
+      schedules.filter(session => sessionDays(session).includes(day)).forEach(session => {
+        const isoDate = localDateString(date);
+        const startsAt = sessionStartTimestamp(session, isoDate);
+        const timestamp = startsAt ?? new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59).getTime();
+        if (timestamp > fromDate.getTime()) candidates.push({ date, session, timestamp });
+      });
+    }
+    return candidates.sort((a, b) => a.timestamp - b.timestamp)[0];
+  };
+  const weekGrid = selectedDays.length ? `<div class="attendance-week-grid">${selectedDays.map(day => {
+    const dayIndex = WEEK_DAYS.indexOf(day);
+    const date = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + dayIndex, 12);
+    const isoDate = localDateString(date);
+    const daySessions = upcomingSessions.filter(item => item.day === day);
+    const entries = daySessions.length ? daySessions.map(item => {
+      const isException = item.status === "معذور" || item.status === "استثناء";
+      const label = isException ? "استثناء" : item.status;
+      const badgeClass = label === "غائب" ? "status-expired" : label === "متأخر" || label === "استثناء" ? "status-soon" : label === "حاضر" ? "status-active" : "";
+      const next = label === "متأخر" ? nextAppointment(today) : null;
+      return `<div class="attendance-day-entry"><div><strong>${escapeHtml(item.session.title)}</strong><small>${escapeHtml(item.session.time)}</small></div><span class="subscription-badge ${badgeClass}">${escapeHtml(label)}</span>${item.record?.registeredAt && label !== "غائب" ? `<small>وقت الوصول: ${escapeHtml(item.record.registeredAt)}</small>` : ""}${next ? `<small>الموعد القادم: ${escapeHtml(weekdayForDate(localDateString(next.date)))} ${escapeHtml(egyptianDate.format(next.date))} · ${escapeHtml(next.session.time)}</small>` : ""}</div>`;
+    }).join("") : '<small>لا يوجد موعد محدد</small>';
+    return `<article class="attendance-day-card"><strong>${escapeHtml(day)}</strong><span class="attendance-day-date">${escapeHtml(egyptianDate.format(date))}</span>${entries}</article>`;
+  }).join("")}</div>` : '<div class="empty-state"><p>لم تختر أيام تدريب أسبوعية بعد.</p></div>';
+  const exceptions = records.filter(record => record.status === "معذور" || record.status === "استثناء");
+  const exceptionList = exceptions.length ? `<div class="attendance-exception-list">${exceptions.map(record => `<div class="attendance-exception-row"><span class="subscription-badge status-soon">استثناء</span><strong>${escapeHtml(weekdayForDate(record.isoDate))} · ${escapeHtml(record.date)}</strong><span>${escapeHtml(record.sessionTitle)} · وصل الساعة ${escapeHtml(record.registeredAt || "—")}</span></div>`).join("")}</div>` : "";
+  return `<section class="page-intro"><div><p class="eyebrow">حساب اللاعب</p><h1>الحضور والغياب</h1><p class="welcome-subtitle">تابع أيام تدريبك وتاريخ كل حصة وحالة حضورك ووقت وصولك.</p></div></section><section class="coach-code-value player-code-panel"><span>كود اللاعب</span><strong>${escapeHtml(user.playerCode)}</strong><button class="copy-code" data-action="copy-text" data-copy="${escapeHtml(user.playerCode)}">نسخ الكود</button></section><section class="panel"><div class="panel-heading"><div><h2>كشف أيام التدريب لهذا الأسبوع</h2><p>أيامك المختارة وتاريخ كل يوم وحالة الحضور، مع وقت الوصول والموعد القادم عند التأخير.</p></div></div>${weekGrid}${exceptionList ? `<div class="attendance-exceptions"><h3>استثناءات الحضور في أيام أخرى</h3>${exceptionList}</div>` : ""}</section><section class="panel"><div class="panel-heading"><div><h2>مواعيد التمرين المرشحة</h2><p>كل مواعيد فئتك التي أضافها المشرف؛ الأيام المناسبة لاشتراكك مميزة.</p></div></div>${sessionCards(schedules, false, user)}</section><section class="panel"><div class="panel-heading"><div><h2>سجل الحضور والغياب</h2><p>يظهر هنا تاريخ الحصة وموعدها ووقت وصول اللاعب. يمكن طلب استثناء لتعويض غياب خلال الشهر الحالي، بعد موافقة المشرف.</p></div></div>${records.length ? `<div class="table-wrap"><table><thead><tr><th>التدريب</th><th>تاريخ الحصة وموعدها</th><th>وقت الحضور</th><th>الحالة / الاستثناء</th></tr></thead><tbody>${records.map(record => { const request = makeUpRequestFor(record); const exceptionLabel = request ? `استثناء ${request.status}` : ""; const exceptionAction = !request && canRequestMakeup(user, record) ? `<button class="small-action" data-action="request-makeup" data-attendance="${escapeHtml(record.id)}">طلب استثناء</button>` : ""; const statusLabel = record.status === "معذور" ? "استثناء" : record.status || "حاضر"; return `<tr><td>${escapeHtml(record.sessionTitle)}</td><td>${escapeHtml(record.date)} · ${escapeHtml(record.sessionTime || "—")}</td><td>${escapeHtml(record.registeredAt || "—")}</td><td><span class="subscription-badge ${record.status === "غائب" ? "status-expired" : record.status === "معذور" || record.status === "متأخر" ? "status-soon" : "status-active"}">${escapeHtml(statusLabel)}</span>${exceptionLabel ? `<small class="table-subtext">${escapeHtml(exceptionLabel)}${request.date ? ` · ${escapeHtml(request.date)} ${escapeHtml(request.time || "")} · ${escapeHtml(request.sessionTitle || "")}` : ""}</small>` : ""}${exceptionAction}</td></tr>`; }).join("")}</tbody></table></div>` : '<div class="empty-state"><p>لا توجد سجلات حضور بعد.</p></div>'}</section>`;
 }
 
 function memberSubscriptionView() {
