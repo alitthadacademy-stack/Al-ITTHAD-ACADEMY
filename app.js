@@ -188,6 +188,46 @@ function normalizeDigits(value) {
   });
 }
 
+function sessionClockParts(value) {
+  const rawTime = normalizeDigits(value || "").trim().toLocaleLowerCase("ar");
+  const match = rawTime.match(/(\d{1,2})\s*[:٫]\s*(\d{2})/);
+  if (!match) return null;
+  let hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const isPm = /مساء|(?:^|\s)م(?:\s|$)|pm/.test(rawTime);
+  const isAm = /صباح|(?:^|\s)ص(?:\s|$)|am/.test(rawTime);
+  if (minutes > 59 || (isAm && isPm)) return null;
+  if (isAm || isPm) {
+    if (hours < 1 || hours > 12) return null;
+    return { hour: String(hours), minute: String(minutes).padStart(2, "0"), period: isPm ? "pm" : "am" };
+  }
+  if (hours > 23) return null;
+  const period = hours >= 12 ? "pm" : "am";
+  hours = hours % 12 || 12;
+  return { hour: String(hours), minute: String(minutes).padStart(2, "0"), period };
+}
+
+function sessionTimePicker(name, label, value) {
+  const parts = sessionClockParts(value);
+  const hourOptions = Array.from({ length: 12 }, (_, index) => {
+    const hour = String(index + 1);
+    return `<option value="${hour}" ${parts?.hour === hour ? "selected" : ""}>${arabicDigits(hour)}</option>`;
+  }).join("");
+  const minuteOptions = Array.from({ length: 60 }, (_, minute) => {
+    const value = String(minute).padStart(2, "0");
+    return `<option value="${value}" ${parts?.minute === value ? "selected" : ""}>${arabicDigits(value)}</option>`;
+  }).join("");
+  return `<fieldset class="session-time-field"><legend>${label}</legend><div class="session-time-picker"><label>الساعة<select name="${name}Hour" required><option value="" disabled ${parts ? "" : "selected"}>اختر</option>${hourOptions}</select></label><label>الدقيقة<select name="${name}Minute" required><option value="" disabled ${parts ? "" : "selected"}>اختر</option>${minuteOptions}</select></label><label>الفترة<select name="${name}Period" required><option value="" disabled ${parts ? "" : "selected"}>اختر</option><option value="am" ${parts?.period === "am" ? "selected" : ""}>صباحًا</option><option value="pm" ${parts?.period === "pm" ? "selected" : ""}>مساءً</option></select></label></div></fieldset>`;
+}
+
+function selectedSessionTime(form, name) {
+  const hour = String(form.get(`${name}Hour`) || "");
+  const minute = String(form.get(`${name}Minute`) || "");
+  const period = String(form.get(`${name}Period`) || "");
+  if (!/^(?:[1-9]|1[0-2])$/.test(hour) || !/^(?:[0-5]\d)$/.test(minute) || !["am", "pm"].includes(period)) return null;
+  return `${hour}:${minute} ${period === "am" ? "صباحًا" : "مساءً"}`;
+}
+
 function sessionTimeTimestamp(rawTimeValue, isoDate) {
   const rawTime = normalizeDigits(rawTimeValue || "").trim().toLocaleLowerCase("ar");
   const match = rawTime.match(/(\d{1,2})\s*[:٫]\s*(\d{2})/);
@@ -196,10 +236,11 @@ function sessionTimeTimestamp(rawTimeValue, isoDate) {
   const minutes = Number(match[2]);
   const isPm = /مساء|(?:^|\s)م(?:\s|$)|pm/.test(rawTime);
   const isAm = /صباح|(?:^|\s)ص(?:\s|$)|am/.test(rawTime);
-  if (hours > 23 || minutes > 59) return null;
+  if (minutes > 59 || (isAm && isPm)) return null;
+  if ((isAm || isPm) && (hours < 1 || hours > 12)) return null;
+  if (!isAm && !isPm && hours > 23) return null;
   if (isPm && hours < 12) hours += 12;
   if (isAm && hours === 12) hours = 0;
-  if ((isAm || isPm) && hours > 12) return null;
   const timestamp = new Date(`${isoDate}T${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:00`).getTime();
   return Number.isFinite(timestamp) ? timestamp : null;
 }
@@ -1319,7 +1360,7 @@ function openSessionForm(existingSession = null) {
   const trainerOptions = trainers.map(trainer => `<option value="${escapeHtml(trainer.id)}" ${existingSession?.coachId === trainer.id ? "selected" : ""}>${escapeHtml(trainer.name)}</option>`).join("");
   const session = existingSession || {};
   const categoryOptions = AGE_CATEGORIES.map(category => `<option value="${escapeHtml(category)}" ${session.category === category ? "selected" : ""}>${escapeHtml(category)}</option>`).join("");
-  openModal(existingSession ? "تعديل موعد تدريب كرة السلة" : "إضافة تدريب كرة السلة", `<label>اسم الحصة<input name="title" required value="${escapeHtml(session.title || "")}" placeholder="تدريب كرة السلة"></label><div class="form-row"><label>المدرب<select name="coachId" required>${trainerOptions}</select></label><label>الفئة العمرية<select name="category" required>${categoryOptions}</select></label></div><fieldset class="registration-days"><legend>أيام تدريب المجموعة</legend><div class="day-choice-grid">${dayOptions}</div></fieldset><div class="form-row"><label>وقت البداية<input name="time" required value="${escapeHtml(session.time || "")}" placeholder="٥:٠٠ مساءً"></label><label>وقت النهاية<input name="endTime" required value="${escapeHtml(session.endTime || "")}" placeholder="٧:٠٠ مساءً"></label></div><label>الملعب<input name="place" required value="${escapeHtml(session.place || "")}" placeholder="ملعب الأكاديمية"></label><p class="modal-explainer">أيام المجموعة تظل ثابتة. يبدأ تسجيل الحضور قبل وقت البداية بنصف ساعة ويغلق عند وقت النهاية. حدّد وقت نهاية الحصص القديمة يدويًا.</p>`, existingSession ? "حفظ التعديل" : "حفظ التدريب", form => saveSession(form, existingSession?.id), "جدول التدريبات");
+  openModal(existingSession ? "تعديل موعد تدريب كرة السلة" : "إضافة تدريب كرة السلة", `<label>اسم الحصة<input name="title" required value="${escapeHtml(session.title || "")}" placeholder="تدريب كرة السلة"></label><div class="form-row"><label>المدرب<select name="coachId" required>${trainerOptions}</select></label><label>الفئة العمرية<select name="category" required>${categoryOptions}</select></label></div><fieldset class="registration-days"><legend>أيام تدريب المجموعة</legend><div class="day-choice-grid">${dayOptions}</div></fieldset><div class="form-row session-time-row">${sessionTimePicker("time", "وقت البداية", session.time)}${sessionTimePicker("endTime", "وقت النهاية", session.endTime)}</div><label>الملعب<input name="place" required value="${escapeHtml(session.place || "")}" placeholder="ملعب الأكاديمية"></label><p class="modal-explainer">أيام المجموعة تظل ثابتة. يبدأ تسجيل الحضور قبل وقت البداية بنصف ساعة ويغلق عند وقت النهاية. حدّد وقت نهاية الحصص القديمة يدويًا.</p>`, existingSession ? "تأكيد تعديل التدريب" : "تأكيد إضافة التدريب", form => saveSession(form, existingSession?.id), "جدول التدريبات");
 }
 
 function saveSession(form, sessionId) {
@@ -1330,8 +1371,9 @@ function saveSession(form, sessionId) {
   if (!trainer) { showToast("اختر مدربًا مسجلًا في الأكاديمية."); return; }
   const category = String(form.get("category"));
   if (!AGE_CATEGORIES.includes(category)) { showToast("اختر فئة عمرية صحيحة."); return; }
-  const time = String(form.get("time")).trim();
-  const endTime = String(form.get("endTime")).trim();
+  const time = selectedSessionTime(form, "time");
+  const endTime = selectedSessionTime(form, "endTime");
+  if (!time || !endTime) { showToast("اختر الساعة والدقيقة والفترة لوقت البداية والنهاية."); return; }
   const startsAt = sessionTimeTimestamp(time, "2000-01-01");
   const endsAt = sessionTimeTimestamp(endTime, "2000-01-01");
   if (startsAt === null || endsAt === null || endsAt <= startsAt) { showToast("أدخل وقت بداية ونهاية صحيحين، على أن تكون النهاية بعد البداية."); return; }
