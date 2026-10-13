@@ -118,6 +118,21 @@ service cloud.firestore {
       allow update, delete: if isCoach();
     }
 
+    match /subscriptions/{subscriptionId} {
+      allow read: if isCoach();
+      allow create: if isGuardian()
+        && request.resource.data.keys().hasAll(['playerName', 'transferCode', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['playerName', 'transferCode', 'createdAt'])
+        && request.resource.data.playerName is string
+        && request.resource.data.playerName.size() >= 2
+        && request.resource.data.playerName.size() <= 80
+        && request.resource.data.transferCode is string
+        && request.resource.data.transferCode.size() >= 4
+        && request.resource.data.transferCode.size() <= 120
+        && request.resource.data.createdAt is timestamp;
+      allow update, delete: if isCoach();
+    }
+
     match /attendance/{attendanceId} {
       allow read: if isCoach()
         || (isGuardian() && resource.data.guardianId == request.auth.uid)

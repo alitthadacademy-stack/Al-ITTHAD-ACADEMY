@@ -25,19 +25,10 @@ import {
   where,
   writeBatch
 } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-firestore.js";
-import {
-  deleteObject,
-  getDownloadURL,
-  getStorage,
-  ref,
-  uploadBytes
-} from "https://www.gstatic.com/firebasejs/12.4.0/firebase-storage.js";
-
 const firebaseConfig = {
   apiKey: "AIzaSyC9aS9Syk-aeAkRxdfVozcgn_ntufrDU7U",
   authDomain: "al-attihad-academy-68905.firebaseapp.com",
   projectId: "al-attihad-academy-68905",
-  storageBucket: "al-attihad-academy-68905.firebasestorage.app",
   messagingSenderId: "6173840281",
   appId: "1:6173840281:web:a02c45aeafef1a455ff908",
   measurementId: "G-T993GGK10Z"
@@ -47,7 +38,6 @@ const COACH_EMAIL = "al.itthad.academy@gmail.com";
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const storage = getStorage(app);
 
 function createPlayerCode(existingCodes) {
   let code;
@@ -512,36 +502,29 @@ function academyServices() {
       for (const pendingBatch of batches) await pendingBatch.commit();
       baselineUpdates.forEach(([key, value]) => baseline.set(key, value));
     },
-    async uploadReceipt(guardianId, paymentId, blob) {
-      const receiptRef = ref(storage, `receipts/${guardianId}/${paymentId}.jpg`);
-      try {
-        await uploadBytes(receiptRef, blob, { contentType: "image/jpeg" });
-        return { path: receiptRef.fullPath, url: await getDownloadURL(receiptRef) };
-      } catch (error) {
-        if (error?.code === "storage/unauthorized") {
-          throw new Error("رفض Firebase رفع الإيصال. تأكد من تسجيل الدخول كولي أمر ونشر storage.rules.");
-        }
-        if (error?.code === "storage/bucket-not-found" || error?.code === "storage/no-default-bucket") {
-          throw new Error("Firebase Storage غير مهيأ. أنشئ Storage bucket في مشروع الأكاديمية وتأكد من تطابقه مع firebaseConfig.");
-        }
-        throw error;
-      }
-    },
-    async deleteReceipt(path) {
-      await deleteObject(ref(storage, path));
-    },
     async deleteRecord(collectionName, id) {
       await deleteDoc(doc(db, collectionName, id));
       baseline.delete(`${collectionName}/${id}`);
     },
-    async savePayment(payment) {
-      if (!auth.currentUser || auth.currentUser.uid !== payment.guardianId) throw new Error("لا يمكن حفظ دفعة لهذا الحساب.");
+    async saveSubscriptionRequest(subscription, payment) {
+      if (!auth.currentUser || auth.currentUser.uid !== payment.guardianId) throw new Error("لا يمكن إرسال طلب اشتراك لهذا الحساب.");
       const safePayment = withoutPassword(payment);
+      const batch = writeBatch(db);
+      batch.set(doc(db, "subscriptions", subscription.id), {
+        playerName: subscription.playerName,
+        transferCode: subscription.transferCode,
+        createdAt: serverTimestamp()
+      });
+      batch.set(doc(db, "payments", payment.id), {
+        ...safePayment,
+        createdAt: payment.createdAt,
+        updatedAt: serverTimestamp()
+      });
       try {
-        await setDoc(doc(db, "payments", payment.id), { ...safePayment, updatedAt: serverTimestamp() }, { merge: false });
+        await batch.commit();
       } catch (error) {
         if (error?.code === "permission-denied") {
-          throw new Error("تم رفع الصورة لكن Firestore رفض طلب الدفع. تأكد من نشر firestore.rules وأن حساب ولي الأمر وبيانات اللاعب متطابقة.");
+          throw new Error("رفض Firestore حفظ طلب الاشتراك. تأكد من نشر firestore.rules وأن حساب ولي الأمر وبيانات اللاعب متطابقة.");
         }
         throw error;
       }
