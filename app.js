@@ -1,6 +1,6 @@
 const STORAGE_KEY = "alEtihadAcademy.portal.v1";
 const WEEK_DAYS = ["السبت", "الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"];
-const DEFAULT_WORK_DAYS = ["السبت", "الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس"];
+const DEFAULT_WORK_DAYS = ["السبت", "الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"];
 const DEFAULT_DAY_PRICES = { 1: 400, 2: 760, 3: 1020, 4: 1200, 5: 1400, 6: 1600, 7: 1800 };
 const DEFAULT_INSTAPAY_NUMBER = "01017692213";
 const AGE_CATEGORIES = ["براعم تحت ١٠", "ناشئين تحت ١٤", "شباب تحت ١٨", "شباب ١٨+", "جميع الفئات العمرية"];
@@ -188,8 +188,8 @@ function normalizeDigits(value) {
   });
 }
 
-function sessionStartTimestamp(session, isoDate) {
-  const rawTime = normalizeDigits(session?.time || "").trim().toLocaleLowerCase("ar");
+function sessionTimeTimestamp(rawTimeValue, isoDate) {
+  const rawTime = normalizeDigits(rawTimeValue || "").trim().toLocaleLowerCase("ar");
   const match = rawTime.match(/(\d{1,2})\s*[:٫]\s*(\d{2})/);
   if (!match) return null;
   let hours = Number(match[1]);
@@ -202,6 +202,35 @@ function sessionStartTimestamp(session, isoDate) {
   if ((isAm || isPm) && hours > 12) return null;
   const timestamp = new Date(`${isoDate}T${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:00`).getTime();
   return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function sessionStartTimestamp(session, isoDate) {
+  return sessionTimeTimestamp(session?.time, isoDate);
+}
+
+function sessionEndTimestamp(session, isoDate) {
+  return sessionTimeTimestamp(session?.endTime, isoDate);
+}
+
+function attendanceWindowError(session, isoDate, now = new Date()) {
+  if (!session?.endTime) return "أضف وقت نهاية الحصة من تعديل التدريب قبل تسجيل الحضور.";
+  const startsAt = sessionStartTimestamp(session, isoDate);
+  const endsAt = sessionEndTimestamp(session, isoDate);
+  if (startsAt === null || endsAt === null || endsAt <= startsAt) return "وقت بداية الحصة أو نهايتها غير صحيح. حدّث موعد التدريب أولًا.";
+  if (isoDate !== localDateString(now)) return "لا يمكن تسجيل الحضور إلا في يوم الحصة.";
+  if (!sessionDays(session).includes(weekdayForDate(isoDate))) return "هذه الحصة غير مجدولة في يوم الحضور المحدد.";
+  if (now.getTime() < startsAt - 30 * 60 * 1000) return "يفتح تسجيل الحضور قبل بداية الحصة بنصف ساعة فقط.";
+  if (now.getTime() > endsAt) return "انتهى وقت تسجيل الحضور لهذه الحصة.";
+  return "";
+}
+
+function attendanceTimeIsWithinSession(session, isoDate, timestamp, now = Date.now()) {
+  const startsAt = sessionStartTimestamp(session, isoDate);
+  const endsAt = sessionEndTimestamp(session, isoDate);
+  return startsAt !== null && endsAt !== null
+    && timestamp >= startsAt - 30 * 60 * 1000
+    && timestamp <= endsAt
+    && timestamp <= now;
 }
 
 function attendanceStatus(session, isoDate, timestamp, user) {
@@ -358,6 +387,10 @@ function sessionDays(session) {
   return days.filter(day => WEEK_DAYS.includes(day));
 }
 
+function sessionTimeRange(session) {
+  return session.endTime ? `${session.time} - ${session.endTime}` : `${session.time} · يلزم تحديد النهاية`;
+}
+
 function weekdayForDate(isoDate) {
   const dayIndex = new Date(`${isoDate}T12:00:00`).getDay();
   return WEEK_DAYS[(dayIndex + 1) % 7];
@@ -472,7 +505,7 @@ function memberHomeView() {
 
 function sessionCards(sessions, showCoach = false, member = null) {
   if (!sessions.length) return '<div class="empty-state"><strong>لا توجد تدريبات مجدولة</strong><p>ستظهر التدريبات هنا عند إضافتها من الأكاديمية.</p></div>';
-  return `<div class="schedule-list">${sessions.map(session => { const days = sessionDays(session); const playerCount = data.users.filter(user => user.role === "member" && sessionIncludesMember(session, user) && (user.weeklyDays || []).some(day => days.includes(day))).length; const categoryLabel = member ? (sessionMatchesMemberDays(session, member) ? "مناسب لأيام تدريبك" : "موعد متاح لفئتك") : session.category; return `<article class="schedule-card"><div class="schedule-day"><strong>${escapeHtml(days.join("، "))}</strong><span>${escapeHtml(session.time)}</span></div><span class="schedule-mark">🏀</span><div class="schedule-info"><strong>${escapeHtml(session.title)}</strong><span>${escapeHtml(session.place)} · ${escapeHtml(session.coach)}</span>${showCoach ? `<small>الفئة: ${escapeHtml(session.category)} · ${arabicDigits(playerCount)} لاعب مسجل</small>` : ""}</div>${showCoach ? `<div class="schedule-actions"><button type="button" data-action="take-attendance" data-session="${escapeHtml(session.id)}">كشف الحضور</button><button type="button" data-action="edit-session" data-session="${escapeHtml(session.id)}">تعديل</button><button type="button" data-action="delete-session" data-session="${escapeHtml(session.id)}">حذف</button></div>` : `<span class="schedule-category">${escapeHtml(categoryLabel)}</span>`}</article>`; }).join("")}</div>`;
+  return `<div class="schedule-list">${sessions.map(session => { const days = sessionDays(session); const playerCount = data.users.filter(user => user.role === "member" && sessionIncludesMember(session, user) && (user.weeklyDays || []).some(day => days.includes(day))).length; const categoryLabel = member ? (sessionMatchesMemberDays(session, member) ? "مناسب لأيام تدريبك" : "موعد متاح لفئتك") : session.category; return `<article class="schedule-card"><div class="schedule-day"><strong>${escapeHtml(days.join("، "))}</strong><span>${escapeHtml(sessionTimeRange(session))}</span></div><span class="schedule-mark">🏀</span><div class="schedule-info"><strong>${escapeHtml(session.title)}</strong><span>${escapeHtml(session.place)} · ${escapeHtml(session.coach)}</span>${showCoach ? `<small>الفئة: ${escapeHtml(session.category)} · ${arabicDigits(playerCount)} لاعب مسجل</small>` : ""}</div>${showCoach ? `<div class="schedule-actions"><button type="button" data-action="take-attendance" data-session="${escapeHtml(session.id)}">كشف الحضور</button><button type="button" data-action="edit-session" data-session="${escapeHtml(session.id)}">تعديل</button><button type="button" data-action="delete-session" data-session="${escapeHtml(session.id)}">حذف</button></div>` : `<span class="schedule-category">${escapeHtml(categoryLabel)}</span>`}</article>`; }).join("")}</div>`;
 }
 
 function memberScheduleView() {
@@ -481,7 +514,7 @@ function memberScheduleView() {
   const availableSessions = sessionsForMember(user).filter(session => sessionMatchesMemberDays(session, user));
   const selectedSessions = selectedSessionsForMember(user);
   const selectedIds = new Set(selectedSessions.map(session => session.id));
-  const selectionForm = availableSessions.length ? `<section class="panel"><div class="panel-heading"><div><h2>اختر مواعيدك المفضلة</h2><p>اختر الوقت والمجموعة المناسبة من المواعيد المتاحة لأيام تدريبك. حفظ الموعد لا يفعّل الاشتراك؛ يلزم تأكيد الدفع.</p></div></div><form id="member-sessions-form"><div class="session-choice-list">${availableSessions.map(session => `<label class="session-choice"><input type="checkbox" name="sessionIds" value="${escapeHtml(session.id)}" ${selectedIds.has(session.id) ? "checked" : ""}><span><strong>${escapeHtml(session.title)}</strong><small>${escapeHtml(sessionDays(session).join("، "))} · ${escapeHtml(session.time)} · ${escapeHtml(session.place)} · ${escapeHtml(session.coach)}</small></span></label>`).join("")}</div><button class="primary-button" type="submit">حفظ المواعيد المختارة</button></form></section>` : `<section class="panel"><div class="empty-state"><p>لا توجد مواعيد لفئتك وأيام تدريبك حاليًا. تواصل مع المشرف أو راجع أيام الاشتراك.</p></div></section>`;
+  const selectionForm = availableSessions.length ? `<section class="panel"><div class="panel-heading"><div><h2>اختر مواعيدك المفضلة</h2><p>اختر الوقت والمجموعة المناسبة من المواعيد المتاحة لأيام تدريبك. حفظ الموعد لا يفعّل الاشتراك؛ يلزم تأكيد الدفع.</p></div></div><form id="member-sessions-form"><div class="session-choice-list">${availableSessions.map(session => `<label class="session-choice"><input type="checkbox" name="sessionIds" value="${escapeHtml(session.id)}" ${selectedIds.has(session.id) ? "checked" : ""}><span><strong>${escapeHtml(session.title)}</strong><small>${escapeHtml(sessionDays(session).join("، "))} · ${escapeHtml(sessionTimeRange(session))} · ${escapeHtml(session.place)} · ${escapeHtml(session.coach)}</small></span></label>`).join("")}</div><button class="primary-button" type="submit">حفظ المواعيد المختارة</button></form></section>` : `<section class="panel"><div class="empty-state"><p>لا توجد مواعيد لفئتك وأيام تدريبك حاليًا. تواصل مع المشرف أو راجع أيام الاشتراك.</p></div></section>`;
   const sessions = selectedSessions.length ? selectedSessions : sessionsForMember(user);
   return `<section class="page-intro"><div><p class="eyebrow">جدولك الرياضي</p><h1>تدريبات ${escapeHtml(user.category)}</h1><p class="welcome-subtitle">اختر وقت تدريبك من المواعيد التي أضافها المشرف؛ يمكنك تحديث اختيارك لاحقًا.</p></div></section>${selectionForm}<section class="panel schedule-panel"><div class="panel-heading"><div><h2>${selectedSessions.length ? "مواعيدك المختارة" : "المواعيد المتاحة لفئتك"}</h2><p>${arabicDigits(sessions.length)} حصص على الجدول</p></div></div>${sessionCards(sessions, false, user)}</section>`;
 }
@@ -536,7 +569,7 @@ function memberAttendanceView() {
       const label = isException ? "استثناء" : item.status;
       const badgeClass = label === "غائب" ? "status-expired" : label === "متأخر" || label === "استثناء" ? "status-soon" : label === "حاضر" ? "status-active" : "";
       const next = label === "متأخر" ? nextAppointment(today) : null;
-      return `<div class="attendance-day-entry"><div><strong>${escapeHtml(item.session.title)}</strong><small>${escapeHtml(item.session.time)}</small></div><span class="subscription-badge ${badgeClass}">${escapeHtml(label)}</span>${item.record?.registeredAt && label !== "غائب" ? `<small>وقت الوصول: ${escapeHtml(item.record.registeredAt)}</small>` : ""}${next ? `<small>الموعد القادم: ${escapeHtml(weekdayForDate(localDateString(next.date)))} ${escapeHtml(egyptianDate.format(next.date))} · ${escapeHtml(next.session.time)}</small>` : ""}</div>`;
+      return `<div class="attendance-day-entry"><div><strong>${escapeHtml(item.session.title)}</strong><small>${escapeHtml(sessionTimeRange(item.session))}</small></div><span class="subscription-badge ${badgeClass}">${escapeHtml(label)}</span>${item.record?.registeredAt && label !== "غائب" ? `<small>وقت الوصول: ${escapeHtml(item.record.registeredAt)}</small>` : ""}${next ? `<small>الموعد القادم: ${escapeHtml(weekdayForDate(localDateString(next.date)))} ${escapeHtml(egyptianDate.format(next.date))} · ${escapeHtml(sessionTimeRange(next.session))}</small>` : ""}</div>`;
     }).join("") : '<small>لا يوجد موعد محدد</small>';
     return `<article class="attendance-day-card"><strong>${escapeHtml(day)}</strong><span class="attendance-day-date">${escapeHtml(egyptianDate.format(date))}</span>${entries}</article>`;
   }).join("")}</div>` : '<div class="empty-state"><p>لم تختر أيام تدريب أسبوعية بعد.</p></div>';
@@ -832,7 +865,7 @@ function coachAttendanceView() {
   const sessionButtons = data.sessions.length ? data.sessions.map(session => {
     const days = sessionDays(session);
     const count = data.users.filter(user => user.role === "member" && sessionIncludesMember(session, user) && (user.weeklyDays || []).some(day => days.includes(day))).length;
-    return `<article class="schedule-card"><div class="schedule-day"><strong>${escapeHtml(days.join("، "))}</strong><span>${escapeHtml(session.time)}</span></div><span class="schedule-mark">🏀</span><div class="schedule-info"><strong>${escapeHtml(session.title)}</strong><span>${escapeHtml(session.category)} · ${arabicDigits(count)} لاعب مسجل</span></div><button class="small-action" data-action="take-attendance" data-session="${escapeHtml(session.id)}">فتح كشف الحضور</button></article>`;
+    return `<article class="schedule-card"><div class="schedule-day"><strong>${escapeHtml(days.join("، "))}</strong><span>${escapeHtml(sessionTimeRange(session))}</span></div><span class="schedule-mark">🏀</span><div class="schedule-info"><strong>${escapeHtml(session.title)}</strong><span>${escapeHtml(session.category)} · ${arabicDigits(count)} لاعب مسجل</span></div><button class="small-action" data-action="take-attendance" data-session="${escapeHtml(session.id)}">فتح كشف الحضور</button></article>`;
   }).join("") : '<div class="empty-state"><p>أضف حصة إلى الجدول لفتح كشف الحضور.</p></div>';
   const makeupRows = pendingMakeups.map(request => {
     const user = data.users.find(item => item.id === request.playerId && item.role === "member");
@@ -850,7 +883,7 @@ function openMakeupRequest(attendanceId) {
   const maxDate = [localDateString(), user.subscriptionEnd].sort()[0];
   const sessions = sessionsForMember(user);
   if (!sessions.length) { showToast("لا توجد مجموعة مناسبة لتسجيل يوم التعويض."); return; }
-  const sessionOptions = sessions.map(session => `<option value="${escapeHtml(session.id)}">${escapeHtml(session.title)} · ${escapeHtml(sessionDays(session).join("، "))} · ${escapeHtml(session.time)}</option>`).join("");
+  const sessionOptions = sessions.map(session => `<option value="${escapeHtml(session.id)}">${escapeHtml(session.title)} · ${escapeHtml(sessionDays(session).join("، "))} · ${escapeHtml(sessionTimeRange(session))}</option>`).join("");
   const now = new Date();
   const timeNow = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
   openModal("طلب استثناء لتعويض الغياب", `<p class="modal-explainer">الغياب عن ${escapeHtml(absence.sessionTitle)} بتاريخ ${escapeHtml(absence.date)}. سجّل يومًا لاحقًا للغياب ومجموعة ووقت حضور اللاعب الفعلي. يمكن طلب التعويض في أي يوم حتى نهاية الاشتراك، ويجب اعتماده من المشرف.</p><label>يوم حضور التعويض<input name="makeupDate" type="date" min="${absence.isoDate}" max="${maxDate}" required></label><label>مجموعة التدريب<select name="sessionId" required>${sessionOptions}</select></label><label>وقت وصول اللاعب<input name="makeupTime" type="time" value="${timeNow}" required></label>`, "إرسال طلب الاستثناء", form => saveMakeupRequest(form, absence.id), "الحضور والغياب");
@@ -959,7 +992,7 @@ function renderTrainerPlayerSearch(query) {
     const playerSessions = sessions.filter(session => sessionIncludesMember(session, player));
     return playerSessions.map(session => {
       const alreadyRecorded = data.attendance.some(record => record.playerId === player.id && record.sessionId === session.id && record.isoDate === localDateString());
-      return `<article class="roster-row"><div><strong>${escapeHtml(player.name)}</strong><small>كود اللاعب: ${escapeHtml(player.playerCode)} · ${escapeHtml(session.title)} · ${escapeHtml(sessionDays(session).join("، "))} ${escapeHtml(session.time)}</small></div><button type="button" class="small-action" data-action="trainer-mark-attendance" data-player="${escapeHtml(player.id)}" data-session="${escapeHtml(session.id)}" ${alreadyRecorded ? "disabled" : ""}>${alreadyRecorded ? "تم التسجيل اليوم" : "تسجيل الحضور"}</button></article>`;
+      return `<article class="roster-row"><div><strong>${escapeHtml(player.name)}</strong><small>كود اللاعب: ${escapeHtml(player.playerCode)} · ${escapeHtml(session.title)} · ${escapeHtml(sessionDays(session).join("، "))} ${escapeHtml(sessionTimeRange(session))}</small></div><button type="button" class="small-action" data-action="trainer-mark-attendance" data-player="${escapeHtml(player.id)}" data-session="${escapeHtml(session.id)}" ${alreadyRecorded ? "disabled" : ""}>${alreadyRecorded ? "تم التسجيل اليوم" : "تسجيل الحضور"}</button></article>`;
     }).join("");
   }).join("");
 }
@@ -969,9 +1002,11 @@ function openSearchedPlayerAttendanceForm(playerId, sessionId) {
   const player = data.users.find(user => user.id === playerId && user.role === "member");
   const session = data.sessions.find(item => item.id === sessionId && item.coachId === currentUser.id);
   if (!player || !session || !sessionIncludesMember(session, player)) { showToast("اللاعب أو المجموعة غير متاحين لحسابك."); return; }
+  const windowError = attendanceWindowError(session, localDateString());
+  if (windowError) { showToast(windowError); return; }
   const now = new Date();
   const timeNow = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-  openModal(`تسجيل حضور · ${player.name}`, `<p class="modal-explainer">المجموعة: ${escapeHtml(session.title)} · ${escapeHtml(sessionDays(session).join("، "))} · ${escapeHtml(session.time)}. سيظهر الحضور معذورًا إذا كان اليوم خارج أيام اللاعب أو المجموعة، ومتأخرًا بعد ٣٠ دقيقة.</p><input type="hidden" name="playerId" value="${escapeHtml(player.id)}"><input type="hidden" name="sessionId" value="${escapeHtml(session.id)}"><label>تاريخ الحضور<input type="date" name="attendanceDate" value="${localDateString()}" required></label><label>وقت حضور اللاعب<input type="time" name="attendanceTime" value="${timeNow}" required></label>`, "تأكيد الحضور", form => saveTrainerAttendanceForPlayer(form), "حضور اللاعبين");
+  openModal(`تسجيل حضور · ${player.name}`, `<p class="modal-explainer">المجموعة: ${escapeHtml(session.title)} · ${escapeHtml(sessionDays(session).join("، "))} · ${escapeHtml(sessionTimeRange(session))}. تسجيل الحضور متاح من نصف ساعة قبل البداية حتى النهاية.</p><input type="hidden" name="playerId" value="${escapeHtml(player.id)}"><input type="hidden" name="sessionId" value="${escapeHtml(session.id)}"><label>تاريخ الحضور<input type="date" name="attendanceDate" value="${localDateString()}" required></label><label>وقت حضور اللاعب<input type="time" name="attendanceTime" value="${timeNow}" required></label>`, "تأكيد الحضور", form => saveTrainerAttendanceForPlayer(form), "حضور اللاعبين");
 }
 
 function saveTrainerAttendanceForPlayer(form) {
@@ -988,7 +1023,7 @@ function saveTrainerAttendanceForPlayer(form) {
 
 function openCodeAttendanceForm() {
   if (currentUser?.role !== "coach") { showToast("تسجيل الحضور بالكود من صلاحية المشرف فقط."); return; }
-  const options = data.sessions.map(session => `<option value="${escapeHtml(session.id)}">${escapeHtml(session.title)} · ${escapeHtml(sessionDays(session).join("، "))} · ${escapeHtml(session.time)}</option>`).join("");
+  const options = data.sessions.map(session => `<option value="${escapeHtml(session.id)}">${escapeHtml(session.title)} · ${escapeHtml(sessionDays(session).join("، "))} · ${escapeHtml(sessionTimeRange(session))}</option>`).join("");
   if (!options) { showToast("أضف مجموعة تدريب إلى الجدول أولًا."); return; }
   openModal("تسجيل حضور بكود اللاعب", `<label>كود اللاعب<input name="playerCode" inputmode="numeric" pattern="[0-9٠-٩۰-۹]{6}" minlength="6" maxlength="6" required placeholder="الكود الرقمي المكوّن من ٦ أرقام"></label><label>مجموعة التدريب<select name="sessionId" required>${options}</select></label><p class="modal-explainer">يُسجل حضور اليوم فور التأكيد. إذا كان اللاعب لم يدفع بعد، يمكنك تسجيله كاستثناء وسيُخصم التمرين عند تجديد الاشتراك وسداد كامل المبلغ.</p>`, "تسجيل الحضور الآن", form => saveCodeAttendance(form), "الحضور والغياب");
 }
@@ -1005,6 +1040,12 @@ function saveCodeAttendance(form) {
 
 function registerPlayerAttendance(player, session, dateTime = new Date(), keepCodeEntryOpen = false) {
   const isoDate = localDateString(dateTime);
+  const windowError = attendanceWindowError(session, isoDate);
+  if (windowError) { showToast(windowError); return; }
+  if (!attendanceTimeIsWithinSession(session, isoDate, dateTime.getTime())) {
+    showToast("وقت الحضور يجب أن يكون بين بداية التسجيل قبل الحصة بنصف ساعة ووقت نهاية الحصة.");
+    return;
+  }
   if (data.attendance.some(record => record.playerId === player.id && record.sessionId === session.id && record.isoDate === isoDate)) {
     showToast(`تم تسجيل حضور ${player.name} لهذه المجموعة في هذا التاريخ بالفعل.`);
     return;
@@ -1049,6 +1090,8 @@ function openAttendanceRoster(sessionId) {
   if (currentUser?.role !== "coach") { showToast("تسجيل حضور اللاعبين من صلاحية المشرف فقط."); return; }
   const session = data.sessions.find(item => item.id === sessionId);
   if (!session) { showToast("لم يتم العثور على حصة التدريب."); return; }
+  const windowError = attendanceWindowError(session, localDateString());
+  if (windowError) { showToast(windowError); return; }
   const roster = data.users.filter(user => user.role === "member" && sessionIncludesMember(session, user));
   if (!roster.length) { showToast("لا يوجد لاعبون مسجلون في هذه الفئة."); return; }
   const today = new Date();
@@ -1066,10 +1109,23 @@ function saveAttendanceRoster(form) {
   const session = data.sessions.find(item => item.id === form.get("sessionId"));
   const isoDate = String(form.get("attendanceDate"));
   if (!session || !/^\d{4}-\d{2}-\d{2}$/.test(isoDate) || Number.isNaN(new Date(`${isoDate}T12:00:00`).getTime())) { showToast("تحقق من الحصة وتاريخ كشف الحضور."); return; }
+  const windowError = attendanceWindowError(session, isoDate);
+  if (windowError) { showToast(windowError); return; }
+  const roster = data.users.filter(user => user.role === "member" && sessionIncludesMember(session, user));
+  for (const user of roster) {
+    const selected = String(form.get(`status-${user.id}`));
+    if (!["حاضر", "متأخر", "غائب"].includes(selected) || selected === "غائب") continue;
+    const timeText = String(form.get(`time-${user.id}`) || "");
+    const timestamp = new Date(`${isoDate}T${timeText}:00`).getTime();
+    if (!/^\d{2}:\d{2}$/.test(timeText) || !Number.isFinite(timestamp) || !attendanceTimeIsWithinSession(session, isoDate, timestamp)) {
+      showToast(`وقت حضور ${user.name} خارج وقت الحصة أو لاحق للوقت الحالي.`);
+      return;
+    }
+  }
   const addedRecords = [];
   const skipped = [];
   const userAdjustments = [];
-  data.users.filter(user => user.role === "member" && sessionIncludesMember(session, user)).forEach(user => {
+  roster.forEach(user => {
     const selected = String(form.get(`status-${user.id}`));
     if (!["حاضر", "متأخر", "غائب"].includes(selected)) return;
     if (data.attendance.some(record => record.playerId === user.id && record.sessionId === session.id && record.isoDate === isoDate)) { skipped.push(user.name); return; }
@@ -1263,7 +1319,7 @@ function openSessionForm(existingSession = null) {
   const trainerOptions = trainers.map(trainer => `<option value="${escapeHtml(trainer.id)}" ${existingSession?.coachId === trainer.id ? "selected" : ""}>${escapeHtml(trainer.name)}</option>`).join("");
   const session = existingSession || {};
   const categoryOptions = AGE_CATEGORIES.map(category => `<option value="${escapeHtml(category)}" ${session.category === category ? "selected" : ""}>${escapeHtml(category)}</option>`).join("");
-  openModal(existingSession ? "تعديل موعد تدريب كرة السلة" : "إضافة تدريب كرة السلة", `<label>اسم الحصة<input name="title" required value="${escapeHtml(session.title || "")}" placeholder="تدريب كرة السلة"></label><div class="form-row"><label>المدرب<select name="coachId" required>${trainerOptions}</select></label><label>الفئة العمرية<select name="category" required>${categoryOptions}</select></label></div><fieldset class="registration-days"><legend>أيام تدريب المجموعة</legend><div class="day-choice-grid">${dayOptions}</div></fieldset><label>الوقت<input name="time" required value="${escapeHtml(session.time || "")}" placeholder="٥:٠٠ مساءً"></label><label>الملعب<input name="place" required value="${escapeHtml(session.place || "")}" placeholder="ملعب الأكاديمية"></label><p class="modal-explainer">أيام المجموعة تظل ثابتة حتى يعدلها المشرف. يُحسب التأخير بعد ٣٠ دقيقة، وتظهر المواعيد المرشحة للاعب وولي أمره.</p>`, existingSession ? "حفظ التعديل" : "حفظ التدريب", form => saveSession(form, existingSession?.id), "جدول التدريبات");
+  openModal(existingSession ? "تعديل موعد تدريب كرة السلة" : "إضافة تدريب كرة السلة", `<label>اسم الحصة<input name="title" required value="${escapeHtml(session.title || "")}" placeholder="تدريب كرة السلة"></label><div class="form-row"><label>المدرب<select name="coachId" required>${trainerOptions}</select></label><label>الفئة العمرية<select name="category" required>${categoryOptions}</select></label></div><fieldset class="registration-days"><legend>أيام تدريب المجموعة</legend><div class="day-choice-grid">${dayOptions}</div></fieldset><div class="form-row"><label>وقت البداية<input name="time" required value="${escapeHtml(session.time || "")}" placeholder="٥:٠٠ مساءً"></label><label>وقت النهاية<input name="endTime" required value="${escapeHtml(session.endTime || "")}" placeholder="٧:٠٠ مساءً"></label></div><label>الملعب<input name="place" required value="${escapeHtml(session.place || "")}" placeholder="ملعب الأكاديمية"></label><p class="modal-explainer">أيام المجموعة تظل ثابتة. يبدأ تسجيل الحضور قبل وقت البداية بنصف ساعة ويغلق عند وقت النهاية. حدّد وقت نهاية الحصص القديمة يدويًا.</p>`, existingSession ? "حفظ التعديل" : "حفظ التدريب", form => saveSession(form, existingSession?.id), "جدول التدريبات");
 }
 
 function saveSession(form, sessionId) {
@@ -1274,7 +1330,12 @@ function saveSession(form, sessionId) {
   if (!trainer) { showToast("اختر مدربًا مسجلًا في الأكاديمية."); return; }
   const category = String(form.get("category"));
   if (!AGE_CATEGORIES.includes(category)) { showToast("اختر فئة عمرية صحيحة."); return; }
-  const session = { id: sessionId || crypto.randomUUID(), title: String(form.get("title")).trim(), coach: trainer.name, coachId: trainer.id, days, day: days[0], time: String(form.get("time")).trim(), place: String(form.get("place")).trim(), category };
+  const time = String(form.get("time")).trim();
+  const endTime = String(form.get("endTime")).trim();
+  const startsAt = sessionTimeTimestamp(time, "2000-01-01");
+  const endsAt = sessionTimeTimestamp(endTime, "2000-01-01");
+  if (startsAt === null || endsAt === null || endsAt <= startsAt) { showToast("أدخل وقت بداية ونهاية صحيحين، على أن تكون النهاية بعد البداية."); return; }
+  const session = { id: sessionId || crypto.randomUUID(), title: String(form.get("title")).trim(), coach: trainer.name, coachId: trainer.id, days, day: days[0], time, endTime, place: String(form.get("place")).trim(), category };
   if (sessionId) {
     const index = data.sessions.findIndex(item => item.id === sessionId);
     if (index < 0) { showToast("لم يتم العثور على موعد التدريب."); return; }

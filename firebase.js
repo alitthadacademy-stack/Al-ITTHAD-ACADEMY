@@ -73,7 +73,8 @@ function baselineValue(name, record) {
       workDays: record.workDays || [],
       pricesByDays: record.pricesByDays || {},
       instaPayAddress: record.instaPayAddress || "",
-      paymentDestinationType: record.paymentDestinationType || "instapay"
+      paymentDestinationType: record.paymentDestinationType || "instapay",
+      workDaysVersion: record.workDaysVersion || 1
     });
   }
   const cleanRecord = name === "players" ? playerForFirestore(record) : withoutPassword(record);
@@ -140,7 +141,7 @@ function documentsFromSnapshot(snapshot, single) {
 function collectionsForRole(profile) {
   const names = ["players", "sessions"];
   if (profile.role !== "member") names.unshift("users");
-  if (profile.role !== "member") names.push("attendance");
+  names.push("attendance");
   if (profile.role !== "trainer") names.push("payments", "attendanceExceptions");
   if (profile.role === "coach") names.push("trainerAttendance");
   if (profile.role === "coach") names.push("expenses");
@@ -154,7 +155,8 @@ function applyRecords(state, name, records, profile) {
     if (settings) {
       state.instaPayAddress = settings.instaPayAddress || "";
       state.paymentDestinationType = settings.paymentDestinationType || "instapay";
-      state.workDays = Array.isArray(settings.workDays) ? settings.workDays : [];
+      state.workDays = Array.isArray(settings.workDays) ? [...settings.workDays] : [];
+      if ((settings.workDaysVersion || 1) < 2 && !state.workDays.includes("الجمعة")) state.workDays.push("الجمعة");
       state.pricesByDays = settings.pricesByDays || {};
     }
     return;
@@ -399,9 +401,26 @@ function academyServices() {
           ? getDoc(reference)
           : getDocs(reference);
       }));
-      names.forEach((name, index) => {
+      const initialRecords = snapshots.map((snapshot, index) => {
+        const name = names[index];
         const single = name === "settings" || (name === "users" && profile.role !== "coach") || (name === "players" && profile.role === "member");
-        const records = documentsFromSnapshot(snapshots[index], single);
+        return documentsFromSnapshot(snapshot, single);
+      });
+      const settingsIndex = names.indexOf("settings");
+      const settingsRecord = initialRecords[settingsIndex]?.[0];
+      if (profile.role === "coach" && settingsRecord && (settingsRecord.workDaysVersion || 1) < 2) {
+        const workDays = Array.isArray(settingsRecord.workDays) ? [...settingsRecord.workDays] : [...state.workDays];
+        if (!workDays.includes("الجمعة")) workDays.push("الجمعة");
+        const migratedSettings = { ...settingsRecord, workDays, workDaysVersion: 2 };
+        await setDoc(doc(db, "settings", "academy"), {
+          workDays,
+          workDaysVersion: 2,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+        initialRecords[settingsIndex] = [migratedSettings];
+      }
+      names.forEach((name, index) => {
+        const records = initialRecords[index];
         applyRecords(state, name, records, profile);
         records.forEach(record => baseline.set(`${name}/${record.__docId || record.id}`, baselineValue(name, record)));
       });
@@ -489,7 +508,8 @@ function academyServices() {
           workDays: state.workDays,
           pricesByDays: state.pricesByDays,
           instaPayAddress: state.instaPayAddress,
-          paymentDestinationType: state.paymentDestinationType
+          paymentDestinationType: state.paymentDestinationType,
+          workDaysVersion: 2
         };
         const serialized = JSON.stringify(settings);
         if (baseline.get("settings/academy") !== serialized) {
