@@ -166,6 +166,78 @@ service cloud.firestore {
       allow read, write: if isCoach();
     }
 
+    match /revenues/{revenueId} {
+      allow read, write: if isCoach();
+    }
+
+    match /notificationTokens/{tokenId} {
+      allow read: if isCoach()
+        || (signedIn() && resource.data.ownerUid == request.auth.uid);
+      allow create: if (isGuardian()
+        && request.resource.data.keys().hasAll(['ownerUid', 'guardianId', 'role', 'token', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['ownerUid', 'guardianId', 'role', 'token', 'updatedAt'])
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.guardianId == request.auth.uid
+        && request.resource.data.role == 'guardian'
+        && request.resource.data.updatedAt is timestamp
+        && request.resource.data.token is string
+        && request.resource.data.token.size() > 0
+        && request.resource.data.token.size() <= 4096)
+        || (isMember()
+        && request.resource.data.keys().hasAll(['ownerUid', 'guardianId', 'playerId', 'role', 'token', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['ownerUid', 'guardianId', 'playerId', 'role', 'token', 'updatedAt'])
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.playerId == memberPlayerId()
+        && request.resource.data.role == 'member'
+        && request.resource.data.guardianId == get(/databases/$(database)/documents/players/$(get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode)).data.guardianId
+        && request.resource.data.updatedAt is timestamp
+        && request.resource.data.token is string
+        && request.resource.data.token.size() > 0
+        && request.resource.data.token.size() <= 4096);
+      allow update: if (isGuardian()
+        && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.guardianId == request.auth.uid
+        && request.resource.data.role == 'guardian'
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['guardianId', 'role', 'token', 'updatedAt'])
+        && request.resource.data.token is string
+        && request.resource.data.token.size() > 0
+        && request.resource.data.token.size() <= 4096
+        && request.resource.data.updatedAt is timestamp)
+        || (isMember()
+        && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.playerId == memberPlayerId()
+        && request.resource.data.role == 'member'
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['guardianId', 'playerId', 'role', 'token', 'updatedAt'])
+        && request.resource.data.guardianId == get(/databases/$(database)/documents/players/$(get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode)).data.guardianId
+        && request.resource.data.token is string
+        && request.resource.data.token.size() > 0
+        && request.resource.data.token.size() <= 4096
+        && request.resource.data.updatedAt is timestamp);
+      allow delete: if isCoach()
+        || (signedIn() && resource.data.ownerUid == request.auth.uid);
+    }
+
+    match /announcements/{announcementId} {
+      allow read: if signedIn();
+      allow create: if (isCoach() || isTrainer())
+        && request.resource.data.keys().hasAll(['message', 'authorId', 'authorName', 'authorRole', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['message', 'authorId', 'authorName', 'authorRole', 'createdAt'])
+        && request.resource.data.authorId == request.auth.uid
+        && request.resource.data.authorRole == userProfile(request.auth.uid).role
+        && request.resource.data.message is string
+        && request.resource.data.message.size() >= 1
+        && request.resource.data.message.size() <= 1000
+        && request.resource.data.authorName is string
+        && request.resource.data.authorName.size() >= 2
+        && request.resource.data.authorName.size() <= 80
+        && request.resource.data.createdAt is timestamp;
+      allow update, delete: if isCoach();
+    }
+
     match /settings/{settingId} {
       allow read: if signedIn();
       allow write: if isCoach();

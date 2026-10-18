@@ -11,6 +11,7 @@ import {
   updateProfile
 } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-auth.js";
 import {
+  addDoc,
   collection,
   deleteDoc,
   doc,
@@ -18,6 +19,7 @@ import {
   getDocs,
   getFirestore,
   onSnapshot,
+  orderBy,
   query,
   runTransaction,
   serverTimestamp,
@@ -25,6 +27,13 @@ import {
   where,
   writeBatch
 } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-firestore.js";
+import {
+  deleteToken,
+  getMessaging,
+  getToken,
+  isSupported as isMessagingSupported,
+  onMessage
+} from "https://www.gstatic.com/firebasejs/12.4.0/firebase-messaging.js";
 const firebaseConfig = {
   apiKey: "AIzaSyC9aS9Syk-aeAkRxdfVozcgn_ntufrDU7U",
   authDomain: "al-attihad-academy-68905.firebaseapp.com",
@@ -34,10 +43,91 @@ const firebaseConfig = {
   measurementId: "G-T993GGK10Z"
 };
 const COACH_EMAIL = "al.itthad.academy@gmail.com";
+const FIREBASE_WEB_PUSH_VAPID_KEY = "BG_n4zEwQIE8kkSM-H-bUp5smvv9SIdo9tzZ8NFbxAoYJRHBRBjFLqMfN4GJ_M1Bly9x2X1alwPM96mynMc6620";
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+let foregroundMessageUnsubscribe = null;
+
+async function notificationTokenDocumentId(guardianId, token) {
+  const bytes = new TextEncoder().encode(token);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const tokenHash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  return `${guardianId}_${tokenHash}`;
+}
+
+async function messagingClient() {
+  if (!FIREBASE_WEB_PUSH_VAPID_KEY) {
+    throw new Error("إشعارات الهاتف غير مهيأة بعد. أضف مفتاح Web Push من Firebase Console إلى FIREBASE_WEB_PUSH_VAPID_KEY في firebase.js.");
+  }
+  if (!("Notification" in window) || !("serviceWorker" in navigator) || !(await isMessagingSupported())) {
+    throw new Error("هذا المتصفح أو الجهاز لا يدعم إشعارات Firebase. افتح الموقع عبر HTTPS على متصفح حديث.");
+  }
+  const registration = await navigator.serviceWorker.register("./firebase-messaging-sw.js");
+  const messaging = getMessaging(app);
+  return { messaging, registration };
+}
+
+async function subscribeGuardianToNotifications(profile) {
+  const uid = auth.currentUser?.uid;
+  if (!profile || !["guardian", "member"].includes(profile.role) || !uid) {
+    throw new Error("تفعيل إشعارات الهاتف متاح من حساب ولي الأمر أو اللاعب فقط.");
+  }
+  if ((profile.role === "guardian" && uid !== profile.id)
+    || (profile.role === "member" && uid !== profile.authUid)) {
+    throw new Error("حساب المستخدم الحالي لا يطابق ملف الإشعارات.");
+  }
+  if (Notification.permission !== "granted") {
+    throw new Error("يجب السماح بإشعارات الأكاديمية من إعدادات المتصفح أولًا.");
+  }
+  const { messaging, registration } = await messagingClient();
+  const token = await getToken(messaging, { vapidKey: FIREBASE_WEB_PUSH_VAPID_KEY, serviceWorkerRegistration: registration });
+  if (!token) throw new Error("لم يتمكن Firebase من إنشاء رمز إشعارات لهذا الجهاز.");
+  const tokenId = await notificationTokenDocumentId(uid, token);
+  await setDoc(doc(db, "notificationTokens", tokenId), {
+    ownerUid: uid,
+    guardianId: profile.role === "guardian" ? profile.id : profile.guardianId,
+    ...(profile.role === "member" ? { playerId: profile.id } : {}),
+    role: profile.role,
+    token,
+    updatedAt: serverTimestamp()
+  });
+  if (!foregroundMessageUnsubscribe) {
+    foregroundMessageUnsubscribe = onMessage(messaging, payload => {
+      const title = payload.data?.title || "الاتحاد أكادمي";
+      const body = payload.data?.body || "لديك تحديث جديد من الأكاديمية.";
+      if (Notification.permission === "granted") {
+        registration.showNotification(title, {
+          body,
+          tag: payload.data?.eventId || undefined,
+          data: { url: payload.data?.url || "/" }
+        });
+      }
+    });
+  }
+  return tokenId;
+}
+
+async function unsubscribeGuardianFromNotifications(profile) {
+  const uid = auth.currentUser?.uid;
+  if (!profile || !["guardian", "member"].includes(profile.role) || !uid) {
+    throw new Error("إدارة إشعارات الهاتف متاحة من حساب ولي الأمر أو اللاعب فقط.");
+  }
+  if ((profile.role === "guardian" && uid !== profile.id)
+    || (profile.role === "member" && uid !== profile.authUid)) {
+    throw new Error("حساب المستخدم الحالي لا يطابق ملف الإشعارات.");
+  }
+  const { messaging } = await messagingClient();
+  const token = await getToken(messaging, { vapidKey: FIREBASE_WEB_PUSH_VAPID_KEY });
+  if (token) {
+    const tokenId = await notificationTokenDocumentId(uid, token);
+    await deleteDoc(doc(db, "notificationTokens", tokenId));
+    await deleteToken(messaging);
+  }
+  foregroundMessageUnsubscribe?.();
+  foregroundMessageUnsubscribe = null;
+}
 
 function createPlayerCode(existingCodes) {
   let code;
@@ -58,11 +148,18 @@ function playerForFirestore(player) {
   return safePlayer;
 }
 
+function sessionAllowsCategory(session, category) {
+  const categories = Array.isArray(session.categories) && session.categories.length
+    ? session.categories
+    : [session.category];
+  return categories.includes("جميع الفئات العمرية") || categories.includes(category) || category === "جميع الفئات العمرية";
+}
+
 async function assignedTrainersFor(category) {
   const sessions = await getDocs(collection(db, "sessions"));
   return [...new Set(sessions.docs
     .map(snapshot => snapshot.data())
-    .filter(session => session.category === "جميع الفئات العمرية" || session.category === category || category === "جميع الفئات العمرية")
+    .filter(session => sessionAllowsCategory(session, category))
     .map(session => session.coachId)
     .filter(Boolean))];
 }
@@ -116,7 +213,7 @@ function queryForRole(name, profile) {
   const all = collection(db, name);
   if (name === "settings") return doc(db, "settings", "academy");
   if (profile.role === "coach") return all;
-  if (name === "sessions") return profile.role === "member" ? query(all, where("category", "in", ["جميع الفئات العمرية", profile.category])) : all;
+  if (name === "sessions") return all;
   if (name === "users") return doc(db, "users", profile.id);
   if (name === "players") {
     if (profile.role === "member") return doc(db, "players", profile.playerCode);
@@ -139,12 +236,12 @@ function documentsFromSnapshot(snapshot, single) {
 }
 
 function collectionsForRole(profile) {
-  const names = ["players", "sessions"];
+  const names = ["players", "sessions", "announcements"];
   if (profile.role !== "member") names.unshift("users");
   names.push("attendance");
   if (profile.role !== "trainer") names.push("payments", "attendanceExceptions");
   if (profile.role === "coach") names.push("trainerAttendance");
-  if (profile.role === "coach") names.push("expenses");
+  if (profile.role === "coach") names.push("expenses", "revenues");
   names.push("settings");
   return names;
 }
@@ -169,7 +266,9 @@ function applyRecords(state, name, records, profile) {
     attendance: ["coach", "guardian", "member", "trainer"],
     attendanceExceptions: ["coach", "guardian", "member"],
     trainerAttendance: ["coach", "trainer"],
-    expenses: ["coach"]
+    expenses: ["coach"],
+    revenues: ["coach"],
+    announcements: ["coach", "trainer", "guardian", "member"]
   };
   if (!allowedRoles[name]?.includes(profile.role)) return;
 
@@ -458,7 +557,7 @@ function academyServices() {
         players: state.users.filter(record => record.role === "member").map(record => ({
           ...playerForFirestore(record),
           assignedTrainerIds: profile.role === "coach" ? [...new Set(state.sessions.filter(session =>
-            session.category === "جميع الفئات العمرية" || session.category === record.category || record.category === "جميع الفئات العمرية"
+            sessionAllowsCategory(session, record.category)
           ).map(session => session.coachId).filter(Boolean))] : (record.assignedTrainerIds || []),
           ...(profile.role === "trainer" ? {
             lastAttendanceId: state.attendance.find(attendance =>
@@ -473,7 +572,8 @@ function academyServices() {
         attendance: state.attendance.map(record => ({ ...record, guardianId: record.guardianId || playerForId.get(record.playerId)?.guardianId })),
         attendanceExceptions: state.attendanceExceptions.map(record => ({ ...record, guardianId: record.guardianId || playerForId.get(record.playerId)?.guardianId })),
         trainerAttendance: profile.role === "coach" ? state.trainerAttendance : state.trainerAttendance.filter(record => record.trainerId === profile.id),
-        expenses: profile.role === "coach" ? state.expenses : []
+        expenses: profile.role === "coach" ? state.expenses : [],
+        revenues: profile.role === "coach" ? state.revenues : []
       };
       let batch = writeBatch(db);
       let operationCount = 0;
@@ -526,19 +626,54 @@ function academyServices() {
       await deleteDoc(doc(db, collectionName, id));
       baseline.delete(`${collectionName}/${id}`);
     },
-    async saveSubscriptionRequest(subscription, payment) {
-      if (!auth.currentUser || auth.currentUser.uid !== payment.guardianId) throw new Error("لا يمكن إرسال طلب اشتراك لهذا الحساب.");
-      const safePayment = withoutPassword(payment);
-      const batch = writeBatch(db);
-      batch.set(doc(db, "subscriptions", subscription.id), {
-        playerName: subscription.playerName,
-        transferCode: subscription.transferCode,
+    async listAnnouncements() {
+      const snapshot = await getDocs(query(collection(db, "announcements"), orderBy("createdAt", "desc")));
+      return snapshot.docs.map(item => ({ ...item.data(), id: item.id }));
+    },
+    async createAnnouncement(announcement) {
+      if (!activeProfile || !["coach", "trainer"].includes(activeProfile.role)
+        || activeProfile.id !== auth.currentUser?.uid) {
+        throw new Error("إرسال الإعلانات متاح للمشرف والمدرب المسجلين فقط.");
+      }
+      const reference = await addDoc(collection(db, "announcements"), {
+        message: announcement.message,
+        authorId: activeProfile.id,
+        authorName: activeProfile.name,
+        authorRole: activeProfile.role,
         createdAt: serverTimestamp()
       });
-      batch.set(doc(db, "payments", payment.id), {
-        ...safePayment,
-        createdAt: payment.createdAt,
-        updatedAt: serverTimestamp()
+      const saved = await getDoc(reference);
+      if (!saved.exists()) throw new Error("تم إنشاء الإعلان ولكن تعذر تحميل النسخة المحفوظة.");
+      return { ...saved.data(), id: saved.id };
+    },
+    subscribeGuardianToNotifications,
+    unsubscribeGuardianFromNotifications,
+    async saveSubscriptionRequest(subscription, payment) {
+      return this.saveSubscriptionRequests([{ subscription, payment }]);
+    },
+    async saveSubscriptionRequests(submissions) {
+      if (!Array.isArray(submissions) || !submissions.length) throw new Error("اختر لاعبًا واحدًا على الأقل لإرسال طلب الدفع.");
+      if (submissions.some(({ payment }) => payment.guardianId !== auth.currentUser?.uid)) {
+        throw new Error("لا يمكن إرسال طلب دفع لأبناء حساب ولي الأمر الحالي فقط.");
+      }
+      if (!auth.currentUser || submissions.some(({ payment }) => auth.currentUser.uid !== payment.guardianId)) {
+        throw new Error("لا يمكن إرسال طلب اشتراك لهذا الحساب.");
+      }
+      const batch = writeBatch(db);
+      const paymentBaselines = [];
+      submissions.forEach(({ subscription, payment }) => {
+        const safePayment = withoutPassword(payment);
+        batch.set(doc(db, "subscriptions", subscription.id), {
+          playerName: subscription.playerName,
+          transferCode: subscription.transferCode,
+          createdAt: serverTimestamp()
+        });
+        batch.set(doc(db, "payments", payment.id), {
+          ...safePayment,
+          createdAt: payment.createdAt,
+          updatedAt: serverTimestamp()
+        });
+        paymentBaselines.push([`payments/${payment.id}`, baselineValue("payments", safePayment)]);
       });
       try {
         await batch.commit();
@@ -548,7 +683,7 @@ function academyServices() {
         }
         throw error;
       }
-      baseline.set(`payments/${payment.id}`, baselineValue("payments", safePayment));
+      paymentBaselines.forEach(([key, value]) => baseline.set(key, value));
     },
     async deleteGuardian(guardian, players) {
       await runTransaction(db, async transaction => {
