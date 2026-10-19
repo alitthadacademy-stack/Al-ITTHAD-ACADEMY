@@ -9,7 +9,7 @@
   "theme_color": "#f5f7f4",
   "icons": [
     {
-      "src": "app-icon.png",
+      "src": "app-icon.png?v=2",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"

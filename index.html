@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f5f7f4">
   <link rel="manifest" href="site.webmanifest">
-  <link rel="icon" href="app-icon.png" type="image/png">
-  <link rel="apple-touch-icon" href="app-icon.png">
+  <link rel="icon" href="app-icon.svg?v=2" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="app-icon.png?v=2">
   <title>الاتحاد أكادمي | أكاديمية كرة السلة</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -14,7 +14,31 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <main id="auth-screen" class="auth-screen">
+  <main id="connection-screen" class="connection-screen" role="alert" aria-live="assertive" hidden>
+    <a class="brand connection-brand" href="#" aria-label="الاتحاد أكادمي">
+      <span class="brand-mark"><span></span><span></span><span></span></span>
+      <span class="brand-copy"><strong>الاتحاد</strong><small>أكادمي</small></span>
+    </a>
+    <div class="connection-message">
+      <svg class="connection-cloud" viewBox="0 0 96 80" role="img" aria-label="سحابة بلا اتصال">
+        <path d="M25 57h45a15 15 0 0 0 1-30A24 24 0 0 0 25 32a13 13 0 0 0 0 25Z" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="m35 68 30-55" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+      </svg>
+      <h1>لا يتوفر اتصال بالإنترنت</h1>
+      <p id="connection-status">تحقق من اتصالك بالإنترنت، وسيُعاد الاتصال تلقائيًا عند عودته.</p>
+      <button id="connection-retry" class="connection-retry" type="button">إعادة المحاولة</button>
+    </div>
+  </main>
+  <div id="intro-screen" class="intro-screen" aria-label="الفيديو الافتتاحي للأكاديمية" hidden>
+    <video id="intro-video" autoplay playsinline preload="auto">
+      <source src="./WhatsApp%20Video%202026-10-19%20at%209.56.02%20AM.mp4" type="video/mp4">
+    </video>
+    <div class="intro-actions">
+      <button id="intro-continue" class="intro-continue" type="button" hidden>متابعة إلى الأكاديمية <span>←</span></button>
+    </div>
+  </div>
+  <div id="auth-loading" class="auth-loading" role="status" hidden>جارٍ التحقق من جلسة الدخول...</div>
+  <main id="auth-screen" class="auth-screen" hidden>
     <section class="auth-story">
       <a class="brand auth-brand" href="#" aria-label="الاتحاد أكادمي">
         <span class="brand-mark"><span></span><span></span><span></span></span>
@@ -41,6 +65,11 @@
           <form id="login-form" class="auth-form">
             <label>البريد الإلكتروني<input name="email" type="email" autocomplete="email" required placeholder="name@example.com"></label>
             <label>كلمة المرور<span class="password-input"><input name="password" type="password" autocomplete="current-password" required placeholder="أدخل كلمة المرور"><button type="button" class="show-password" aria-label="إظهار كلمة المرور">◉</button></span></label>
+            <fieldset class="notification-consent">
+              <legend>🔔 إشعارات الأكاديمية <span>الاختيار مطلوب</span></legend>
+              <label><input type="radio" name="notificationConsent" value="accept" required> أوافق على استلام إشعارات الأكاديمية</label>
+              <label><input type="radio" name="notificationConsent" value="decline" required> لا أوافق الآن، ويمكنني الموافقة لاحقًا</label>
+            </fieldset>
             <button class="primary-button auth-submit" type="submit">دخول إلى حسابي <span>←</span></button>
             <p class="form-note">استخدم البريد الإلكتروني وكلمة المرور. اللاعب يمكنه الدخول بكود الحضور.</p>
           </form>
@@ -49,6 +78,11 @@
             <div class="form-row"><label>رقم هاتف ولي الأمر<input name="guardianPhone" type="tel" inputmode="tel" required placeholder="01xxxxxxxxx"></label><label>رقم واتساب ولي الأمر<input name="whatsappPhone" type="tel" inputmode="tel" required placeholder="01xxxxxxxxx"></label></div>
             <div class="form-row"><label>البريد الإلكتروني<input name="email" type="email" autocomplete="email" required placeholder="name@example.com"></label><label>كلمة المرور<span class="password-input"><input name="password" type="password" autocomplete="new-password" minlength="6" required placeholder="٦ أحرف على الأقل"><button type="button" class="show-password" aria-label="إظهار كلمة المرور">◉</button></span></label></div>
             <fieldset class="registration-children"><legend>أسماء الأبناء</legend><div id="child-name-list" class="child-name-list"><div class="child-name-row"><label>اسم الابن<input name="childName" required minlength="2" maxlength="80" placeholder="اسم الابن بالكامل"></label></div></div><button type="button" class="add-child-button" id="add-child-name">＋ إضافة ابن آخر</button></fieldset>
+            <fieldset class="notification-consent">
+              <legend>🔔 إشعارات الأكاديمية <span>الاختيار مطلوب</span></legend>
+              <label><input type="radio" name="notificationConsent" value="accept" required> أوافق على استلام إشعارات الأكاديمية</label>
+              <label><input type="radio" name="notificationConsent" value="decline" required> لا أوافق الآن، ويمكنني الموافقة لاحقًا</label>
+            </fieldset>
             <p class="form-note">سيُنشأ كود رقمي فريد لكل ابن ويُحفظ مع بياناته في قاعدة بيانات الأكاديمية.</p>
             <p class="form-note">استخدم البريد الإلكتروني وكلمة المرور للدخول إلى حسابك ومتابعة لاعبيك.</p>
             <button class="primary-button auth-submit" type="submit">إنشاء حساب ولي الأمر <span>←</span></button>
@@ -102,12 +136,8 @@
   </div>
 
   <div class="modal-backdrop" id="action-modal" aria-hidden="true"><section class="modal" role="dialog" aria-modal="true"><div class="modal-heading"><div><span class="modal-kicker" id="modal-kicker">الأكاديمية</span><h2 id="modal-title"></h2></div><button class="close-modal" id="modal-close" aria-label="إغلاق">×</button></div><form id="action-form"></form></section></div>
-  <div class="offline-notice" id="offline-notice" role="alert" hidden>لا يوجد اتصال بالإنترنت، يُرجى التحقق من الاتصال بالإنترنت.</div>
   <div class="toast" id="toast" role="status" aria-live="polite"><span>✓</span><p></p></div>
-  <script>
-    window.firebaseReady = import("./firebase.js").then(() => window.firebaseServices);
-    window.firebaseReady.catch(error => console.error("تعذر تحميل Firebase.", error));
-  </script>
+  <script>window.loadFirebase = () => import("./firebase.js").then(() => window.firebaseServices);</script>
   <script src="app.js"></script>
 </body>
 </html>

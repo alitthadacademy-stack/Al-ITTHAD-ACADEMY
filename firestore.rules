@@ -231,7 +231,7 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create: if (isCoach() || isTrainer())
         && request.resource.data.keys().hasAll(['message', 'authorId', 'authorName', 'authorRole', 'createdAt'])
-        && request.resource.data.keys().hasOnly(['message', 'authorId', 'authorName', 'authorRole', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['message', 'authorId', 'authorName', 'authorRole', 'createdAt', 'type', 'date', 'targetGuardianIds', 'sessionIds'])
         && request.resource.data.authorId == request.auth.uid
         && request.resource.data.authorRole == userProfile(request.auth.uid).role
         && request.resource.data.message is string
@@ -240,22 +240,40 @@ service cloud.firestore {
         && request.resource.data.authorName is string
         && request.resource.data.authorName.size() >= 2
         && request.resource.data.authorName.size() <= 80
-        && request.resource.data.createdAt is timestamp;
+        && request.resource.data.createdAt is timestamp
+        && (!request.resource.data.keys().hasAny(['type']) || request.resource.data.type == 'dayOff')
+        && (!request.resource.data.keys().hasAny(['type']) || request.resource.data.type != 'dayOff' || isCoach())
+        && (!request.resource.data.keys().hasAny(['targetGuardianIds']) || request.resource.data.type == 'dayOff')
+        && (!request.resource.data.keys().hasAny(['targetGuardianIds']) || isCoach())
+        && (!request.resource.data.keys().hasAny(['date']) || request.resource.data.date is string)
+        && (!request.resource.data.keys().hasAny(['targetGuardianIds']) || request.resource.data.targetGuardianIds is list)
+        && (!request.resource.data.keys().hasAny(['sessionIds']) || request.resource.data.sessionIds is list)
+        && (!request.resource.data.keys().hasAny(['sessionIds']) || request.resource.data.type == 'dayOff')
+        && (!request.resource.data.keys().hasAny(['type']) || request.resource.data.type != 'dayOff'
+          || (request.resource.data.keys().hasAll(['date', 'targetGuardianIds', 'sessionIds'])
+            && request.resource.data.date.matches('^\\d{4}-\\d{2}-\\d{2}$')
+            && request.resource.data.targetGuardianIds.size() > 0
+            && request.resource.data.sessionIds.size() > 0
+            && request.resource.data.sessionIds.size() <= 100));
       allow update, delete: if isCoach();
     }
 
     match /announcementReads/{readId} {
       allow read: if isCoach()
-        || (isGuardian() && resource.data.ownerUid == request.auth.uid);
-      allow create: if isGuardian()
+        || ((isGuardian() || isMember()) && resource.data.ownerUid == request.auth.uid);
+      allow create: if (isGuardian() || isMember())
         && readId == request.auth.uid + '_' + request.resource.data.announcementId
         && request.resource.data.keys().hasAll(['ownerUid', 'announcementId', 'readAt'])
         && request.resource.data.keys().hasOnly(['ownerUid', 'announcementId', 'readAt'])
         && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.announcementId is string
         && exists(/databases/$(database)/documents/announcements/$(request.resource.data.announcementId))
+        && (!isMember()
+          || !get(/databases/$(database)/documents/announcements/$(request.resource.data.announcementId)).data.keys().hasAny(['targetGuardianIds'])
+          || get(/databases/$(database)/documents/announcements/$(request.resource.data.announcementId)).data.targetGuardianIds
+            .hasAny([get(/databases/$(database)/documents/players/$(get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode)).data.guardianId]))
         && request.resource.data.readAt is timestamp;
-      allow update: if isGuardian()
+      allow update: if (isGuardian() || isMember())
         && resource.data.ownerUid == request.auth.uid
         && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.announcementId == resource.data.announcementId

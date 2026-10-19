@@ -100,8 +100,8 @@ async function subscribeGuardianToNotifications(profile) {
       if (Notification.permission === "granted") {
         registration.showNotification(title, {
           body,
-          icon: "./app-icon.png",
-          badge: "./app-icon.png",
+          icon: "./app-icon.png?v=2",
+          badge: "./app-icon.png?v=2",
           tag: payload.data?.eventId || undefined,
           data: { url: payload.data?.url || "/" }
         });
@@ -638,24 +638,28 @@ function academyServices() {
       return snapshot.docs.map(item => ({ ...item.data(), id: item.id }));
     },
     async listAnnouncementReads(profile) {
-      if (!profile || profile.role !== "guardian" || profile.id !== auth.currentUser?.uid) {
-        throw new Error("حالة قراءة الإعلانات متاحة لولي الأمر المسجل فقط.");
+      const currentUid = auth.currentUser?.uid;
+      const ownerUid = profile?.role === "guardian" ? profile.id : profile?.authUid;
+      if (!profile || !["guardian", "member"].includes(profile.role) || !currentUid || ownerUid !== currentUid) {
+        throw new Error("حالة قراءة الإعلانات متاحة لولي الأمر أو اللاعب المسجل فقط.");
       }
       const snapshot = await getDocs(query(
         collection(db, "announcementReads"),
-        where("ownerUid", "==", profile.id)
+        where("ownerUid", "==", ownerUid)
       ));
       return snapshot.docs.map(item => item.data().announcementId);
     },
     async markAnnouncementRead(profile, announcementId) {
-      if (!profile || profile.role !== "guardian" || profile.id !== auth.currentUser?.uid) {
-        throw new Error("تحديد الإعلانات كمقروءة متاح لولي الأمر المسجل فقط.");
+      const currentUid = auth.currentUser?.uid;
+      const ownerUid = profile?.role === "guardian" ? profile.id : profile?.authUid;
+      if (!profile || !["guardian", "member"].includes(profile.role) || !currentUid || ownerUid !== currentUid) {
+        throw new Error("تحديد الإعلانات كمقروءة متاح لولي الأمر أو اللاعب المسجل فقط.");
       }
       if (typeof announcementId !== "string" || !announcementId) {
         throw new Error("تعذر تحديد الإعلان المطلوب.");
       }
-      await setDoc(doc(db, "announcementReads", `${profile.id}_${announcementId}`), {
-        ownerUid: profile.id,
+      await setDoc(doc(db, "announcementReads", `${ownerUid}_${announcementId}`), {
+        ownerUid,
         announcementId,
         readAt: serverTimestamp()
       });
@@ -665,11 +669,17 @@ function academyServices() {
         || activeProfile.id !== auth.currentUser?.uid) {
         throw new Error("إرسال الإعلانات متاح للمشرف والمدرب المسجلين فقط.");
       }
+      const optionalFields = {};
+      if (announcement.type) optionalFields.type = announcement.type;
+      if (announcement.date) optionalFields.date = announcement.date;
+      if (Array.isArray(announcement.targetGuardianIds)) optionalFields.targetGuardianIds = [...new Set(announcement.targetGuardianIds)];
+      if (Array.isArray(announcement.sessionIds)) optionalFields.sessionIds = [...new Set(announcement.sessionIds)];
       const reference = await addDoc(collection(db, "announcements"), {
         message: announcement.message,
         authorId: activeProfile.id,
         authorName: activeProfile.name,
         authorRole: activeProfile.role,
+        ...optionalFields,
         createdAt: serverTimestamp()
       });
       const saved = await getDoc(reference);

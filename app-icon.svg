@@ -1,5 +1,3 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#087b59"/>
-  <circle cx="256" cy="256" r="166" fill="#f5f7f4"/>
-  <path d="M90 256h332M256 90v332M138 138c87 58 149 148 168 236M374 138c-87 58-149 148-168 236" fill="none" stroke="#087b59" stroke-linecap="round" stroke-width="18"/>
+  <image href="./app-icon.png" width="512" height="512" preserveAspectRatio="xMidYMid slice"/>
 </svg>
