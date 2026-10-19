@@ -100,6 +100,8 @@ async function subscribeGuardianToNotifications(profile) {
       if (Notification.permission === "granted") {
         registration.showNotification(title, {
           body,
+          icon: "./app-icon.png",
+          badge: "./app-icon.png",
           tag: payload.data?.eventId || undefined,
           data: { url: payload.data?.url || "/" }
         });
@@ -283,6 +285,11 @@ function applyRecords(state, name, records, profile) {
   state[field].push(...records.map(record => {
     const { __docId, ...appRecord } = record;
     if (name === "players") {
+      appRecord.expectedStartDate ||= appRecord.subscriptionStart || null;
+      appRecord.actualStartDate ||= appRecord.subscriptionStart || null;
+      appRecord.endDate ||= appRecord.subscriptionEnd || null;
+      appRecord.subscriptionEnd ||= appRecord.endDate || null;
+      appRecord.attendanceLogs = Array.isArray(appRecord.attendanceLogs) ? appRecord.attendanceLogs : [];
       const guardian = state.users.find(user => user.id === appRecord.guardianId && user.role === "guardian");
       appRecord.guardian = guardian?.name || "";
       appRecord.guardianPhone ||= guardian?.guardianPhone || "";
@@ -630,6 +637,29 @@ function academyServices() {
       const snapshot = await getDocs(query(collection(db, "announcements"), orderBy("createdAt", "desc")));
       return snapshot.docs.map(item => ({ ...item.data(), id: item.id }));
     },
+    async listAnnouncementReads(profile) {
+      if (!profile || profile.role !== "guardian" || profile.id !== auth.currentUser?.uid) {
+        throw new Error("حالة قراءة الإعلانات متاحة لولي الأمر المسجل فقط.");
+      }
+      const snapshot = await getDocs(query(
+        collection(db, "announcementReads"),
+        where("ownerUid", "==", profile.id)
+      ));
+      return snapshot.docs.map(item => item.data().announcementId);
+    },
+    async markAnnouncementRead(profile, announcementId) {
+      if (!profile || profile.role !== "guardian" || profile.id !== auth.currentUser?.uid) {
+        throw new Error("تحديد الإعلانات كمقروءة متاح لولي الأمر المسجل فقط.");
+      }
+      if (typeof announcementId !== "string" || !announcementId) {
+        throw new Error("تعذر تحديد الإعلان المطلوب.");
+      }
+      await setDoc(doc(db, "announcementReads", `${profile.id}_${announcementId}`), {
+        ownerUid: profile.id,
+        announcementId,
+        readAt: serverTimestamp()
+      });
+    },
     async createAnnouncement(announcement) {
       if (!activeProfile || !["coach", "trainer"].includes(activeProfile.role)
         || activeProfile.id !== auth.currentUser?.uid) {
@@ -664,7 +694,10 @@ function academyServices() {
       submissions.forEach(({ subscription, payment }) => {
         const safePayment = withoutPassword(payment);
         batch.set(doc(db, "subscriptions", subscription.id), {
+          playerId: subscription.playerId,
+          playerCode: subscription.playerCode,
           playerName: subscription.playerName,
+          expectedStartDate: subscription.expectedStartDate,
           transferCode: subscription.transferCode,
           createdAt: serverTimestamp()
         });

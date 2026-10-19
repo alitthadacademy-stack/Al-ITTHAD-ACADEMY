@@ -17,6 +17,8 @@ messaging.onBackgroundMessage(payload => {
   const body = payload.data?.body || "لديك تحديث جديد من الأكاديمية.";
   return self.registration.showNotification(title, {
     body,
+    icon: "./app-icon.png",
+    badge: "./app-icon.png",
     tag: payload.data?.eventId || undefined,
     data: { url: payload.data?.url || "/" }
   });

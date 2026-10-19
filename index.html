@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f5f7f4">
   <link rel="manifest" href="site.webmanifest">
-  <link rel="icon" href="app-icon.svg" type="image/svg+xml">
+  <link rel="icon" href="app-icon.png" type="image/png">
+  <link rel="apple-touch-icon" href="app-icon.png">
   <title>الاتحاد أكادمي | أكاديمية كرة السلة</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -101,6 +102,7 @@
   </div>
 
   <div class="modal-backdrop" id="action-modal" aria-hidden="true"><section class="modal" role="dialog" aria-modal="true"><div class="modal-heading"><div><span class="modal-kicker" id="modal-kicker">الأكاديمية</span><h2 id="modal-title"></h2></div><button class="close-modal" id="modal-close" aria-label="إغلاق">×</button></div><form id="action-form"></form></section></div>
+  <div class="offline-notice" id="offline-notice" role="alert" hidden>لا يوجد اتصال بالإنترنت، يُرجى التحقق من الاتصال بالإنترنت.</div>
   <div class="toast" id="toast" role="status" aria-live="polite"><span>✓</span><p></p></div>
   <script>
     window.firebaseReady = import("./firebase.js").then(() => window.firebaseServices);

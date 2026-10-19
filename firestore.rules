@@ -82,7 +82,9 @@ service cloud.firestore {
           && request.resource.data.guardianId == resource.data.guardianId
           && request.auth.uid in resource.data.assignedTrainerIds
           && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(['sessionsLeft', 'sessionsUsed', 'lastAttendanceId', 'updatedAt'])
+            .hasOnly(['sessionsLeft', 'sessionsUsed', 'expectedStartDate', 'actualStartDate', 'subscriptionStart', 'subscriptionEnd', 'endDate', 'attendanceLogs', 'lastAttendanceId', 'updatedAt'])
+          && request.resource.data.attendanceLogs is list
+          && request.resource.data.lastAttendanceId in request.resource.data.attendanceLogs
           && !exists(/databases/$(database)/documents/attendance/$(request.resource.data.lastAttendanceId))
           && existsAfter(/databases/$(database)/documents/attendance/$(request.resource.data.lastAttendanceId))
           && getAfter(/databases/$(database)/documents/attendance/$(request.resource.data.lastAttendanceId)).data.playerId == resource.data.id
@@ -121,8 +123,12 @@ service cloud.firestore {
     match /subscriptions/{subscriptionId} {
       allow read: if isCoach();
       allow create: if isGuardian()
-        && request.resource.data.keys().hasAll(['playerName', 'transferCode', 'createdAt'])
-        && request.resource.data.keys().hasOnly(['playerName', 'transferCode', 'createdAt'])
+        && request.resource.data.keys().hasAll(['playerId', 'playerCode', 'playerName', 'expectedStartDate', 'transferCode', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['playerId', 'playerCode', 'playerName', 'expectedStartDate', 'transferCode', 'createdAt'])
+        && request.resource.data.playerId == get(/databases/$(database)/documents/players/$(request.resource.data.playerCode)).data.id
+        && get(/databases/$(database)/documents/players/$(request.resource.data.playerCode)).data.guardianId == request.auth.uid
+        && request.resource.data.expectedStartDate is string
+        && request.resource.data.expectedStartDate.size() == 10
         && request.resource.data.playerName is string
         && request.resource.data.playerName.size() >= 2
         && request.resource.data.playerName.size() <= 80
@@ -236,6 +242,26 @@ service cloud.firestore {
         && request.resource.data.authorName.size() <= 80
         && request.resource.data.createdAt is timestamp;
       allow update, delete: if isCoach();
+    }
+
+    match /announcementReads/{readId} {
+      allow read: if isCoach()
+        || (isGuardian() && resource.data.ownerUid == request.auth.uid);
+      allow create: if isGuardian()
+        && readId == request.auth.uid + '_' + request.resource.data.announcementId
+        && request.resource.data.keys().hasAll(['ownerUid', 'announcementId', 'readAt'])
+        && request.resource.data.keys().hasOnly(['ownerUid', 'announcementId', 'readAt'])
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.announcementId is string
+        && exists(/databases/$(database)/documents/announcements/$(request.resource.data.announcementId))
+        && request.resource.data.readAt is timestamp;
+      allow update: if isGuardian()
+        && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.announcementId == resource.data.announcementId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt'])
+        && request.resource.data.readAt is timestamp;
+      allow delete: if false;
     }
 
     match /settings/{settingId} {
