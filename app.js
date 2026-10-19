@@ -3,7 +3,9 @@ const WEEK_DAYS = ["السبت", "الأحد", "الإثنين", "الثلاثا
 const DEFAULT_WORK_DAYS = ["السبت", "الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة"];
 const DEFAULT_DAY_PRICES = { 1: 400, 2: 760, 3: 1020, 4: 1200, 5: 1400, 6: 1600, 7: 1800 };
 const DEFAULT_INSTAPAY_NUMBER = "01017692213";
-const AGE_CATEGORIES = ["براعم تحت ١٠", "ناشئين تحت ١٤", "شباب تحت ١٨", "شباب ١٨+", "جميع الفئات العمرية"];
+const AGE_CATEGORIES = ["أطفال حتى ٦ سنوات", "براعم تحت ١٠", "ناشئين تحت ١٤", "شباب تحت ١٨", "شباب ١٨+", "جميع الفئات العمرية"];
+const MIN_SIBLING_DISCOUNT_TRAINING_DAYS = 2;
+const SIBLING_DISCOUNT_PER_PLAYER = 50;
 const OWNER_NAME = "حازم الدخاخني";
 const arabicDigits = value => String(value).replace(/\d/g, digit => "٠١٢٣٤٥٦٧٨٩"[digit]);
 const egyptianDate = new Intl.DateTimeFormat("ar-EG", { day: "numeric", month: "long", year: "numeric" });
@@ -172,9 +174,16 @@ function createPlayerCode(existingCodes = new Set(data?.users?.map(user => user.
 
 function playerCategoryForBirthDate(birthDate) {
   const birthday = new Date(`${birthDate}T12:00:00`);
+  if (Number.isNaN(birthday.getTime()) || birthDate > localDateString()) return null;
   let age = new Date().getFullYear() - birthday.getFullYear();
   if (new Date().getMonth() < birthday.getMonth() || (new Date().getMonth() === birthday.getMonth() && new Date().getDate() < birthday.getDate())) age -= 1;
-  return age < 10 ? "براعم تحت ١٠" : age < 14 ? "ناشئين تحت ١٤" : age < 18 ? "شباب تحت ١٨" : "شباب ١٨+";
+  return age <= 6 ? "أطفال حتى ٦ سنوات" : age < 10 ? "براعم تحت ١٠" : age < 14 ? "ناشئين تحت ١٤" : age < 18 ? "شباب تحت ١٨" : "شباب ١٨+";
+}
+
+function pendingPlayerCategory(player) {
+  if (!player?.birthDate || !AGE_CATEGORIES.includes(player.category) || player.category === "جميع الفئات العمرية") return null;
+  const currentCategory = playerCategoryForBirthDate(player.birthDate);
+  return currentCategory && currentCategory !== player.category ? currentCategory : null;
 }
 
 function saveLocalData() {
@@ -686,7 +695,7 @@ function guardianChildBar() {
     localStorage.setItem(selectedPlayerStorageKey(currentUser.id), selectedPlayerId);
   }
   const selectedChild = children.find(child => child.id === selectedPlayerId);
-  const completeProfile = selectedChild && (!selectedChild.birthDate || !selectedChild.weeklyDays?.length)
+  const completeProfile = selectedChild && (!selectedChild.birthDate || !selectedChild.gender || !selectedChild.weeklyDays?.length)
     ? `<button class="small-action" aria-label="استكمال بيانات اللاعب" data-action="complete-player" data-player="${escapeHtml(selectedChild.id)}">استكمال بيانات اللاعب</button>`
     : "";
   return `<div class="child-picker-topbar"><label for="selected-player">اختيار اللاعب</label><select id="selected-player">${children.map(child => `<option value="${escapeHtml(child.id)}" ${child.id === selectedPlayerId ? "selected" : ""}>${escapeHtml(child.name)}</option>`).join("")}</select>${completeProfile}<button class="small-action" aria-label="إضافة لاعب" data-action="new-player">＋ إضافة لاعب</button></div>`;
@@ -694,7 +703,22 @@ function guardianChildBar() {
 
 function sessionIncludesMember(session, user) {
   const categories = sessionCategories(session);
-  return categories.includes("جميع الفئات العمرية") || categories.includes(user.category) || user.category === "جميع الفئات العمرية";
+  const categoryMatches = categories.includes("جميع الفئات العمرية")
+    || categories.includes(user.category)
+    || !AGE_CATEGORIES.includes(user.category)
+    || user.category === "جميع الفئات العمرية";
+  const genderMatches = !["male", "female"].includes(session.gender)
+    || !["male", "female"].includes(user.gender)
+    || session.gender === user.gender;
+  return categoryMatches && genderMatches;
+}
+
+function genderLabel(gender) {
+  return gender === "male" ? "ذكر" : gender === "female" ? "أنثى" : "غير محدد";
+}
+
+function sessionGenderLabel(session) {
+  return session.gender === "male" ? "ولاد" : session.gender === "female" ? "بنات" : "الكل";
 }
 
 function sessionCategories(session) {
@@ -951,12 +975,14 @@ function renderView() {
   const notificationButton = byId("portal-notifications");
   const notificationActions = byId("portal-topbar-actions");
   const logoutButton = byId("logout-button");
+  const showAnnouncementsButton = isMemberSpace && activeView === "home";
   if (notificationButton && notificationActions) {
     if (logoutButton?.parentElement === notificationActions) {
       notificationActions.insertBefore(notificationButton, logoutButton);
     } else {
       notificationActions.append(notificationButton);
     }
+    notificationButton.hidden = !showAnnouncementsButton;
   }
   if (isCoach) {
     content.innerHTML = activeView === "schedule" ? coachScheduleView() : activeView === "attendance" ? coachAttendanceView() : activeView === "subscription" ? coachPlayersView() : activeView === "payments" ? coachPaymentsView() : activeView === "settings" ? coachSettingsView() : activeView === "trainers" ? coachTrainersView() : activeView === "trainerAttendance" ? supervisorTrainerAttendanceView() : activeView === "finances" ? financeView() : coachHomeView();
@@ -967,16 +993,16 @@ function renderView() {
     else content.innerHTML = activeView === "schedule" ? `${memberScheduleView()}${memberAttendanceView()}` : activeView === "attendance" ? memberAttendanceView() : activeView === "subscription" ? memberSubscriptionView() : activeView === "payments" ? memberPaymentsView() : memberHomeView();
   }
   const notificationSlot = content.querySelector(".welcome-notification-slot");
-  if (notificationButton && notificationSlot) {
+  if (notificationButton && showAnnouncementsButton && notificationSlot) {
     notificationSlot.append(notificationButton);
-  } else if (notificationButton && notificationActions) {
+  } else if (notificationButton && showAnnouncementsButton && notificationActions) {
     const currentLogoutButton = byId("logout-button");
     if (currentLogoutButton?.parentElement === notificationActions) {
       notificationActions.insertBefore(notificationButton, currentLogoutButton);
     } else {
       notificationActions.append(notificationButton);
     }
-  } else if (notificationButton) {
+  } else if (notificationButton && showAnnouncementsButton) {
     document.body.append(notificationButton);
   }
 }
@@ -1015,7 +1041,11 @@ function memberHomeView() {
   const parentName = currentUser.role === "guardian" ? currentUser.name : user.name;
   const attendanceCount = data.attendance.filter(record => record.playerId === user.id && record.status === "حاضر").length;
   const actionMessage = encodeURIComponent(`مرحبًا، أود الاستفسار عن متابعة اللاعب ${user.name}.`);
-  return `<section class="portal-welcome"><div><p class="eyebrow"><span class="live-dot"></span>${egyptianDate.format(new Date())}</p><h1>أهلًا بك يا ${escapeHtml(parentName)} <span class="wave">✦</span></h1><p class="welcome-subtitle">متابعة اللاعب: <strong>${escapeHtml(user.name)}</strong></p></div><div class="welcome-actions"><div class="welcome-notification-slot"></div><span class="welcome-ball">🏀</span></div></section>${notificationPanel}
+  const pendingCategory = pendingPlayerCategory(user);
+  const categoryNotice = pendingCategory
+    ? `<div class="inline-notice">بلغ اللاعب السن المؤهل للانتقال إلى فئة ${escapeHtml(pendingCategory)}. تظل فئته الحالية حتى اعتماد المشرف.</div>`
+    : "";
+  return `<section class="portal-welcome"><div><p class="eyebrow"><span class="live-dot"></span>${egyptianDate.format(new Date())}</p><h1>أهلًا بك يا ${escapeHtml(parentName)} <span class="wave">✦</span></h1><p class="welcome-subtitle">متابعة اللاعب: <strong>${escapeHtml(user.name)}</strong></p></div><div class="welcome-actions"><div class="welcome-notification-slot"></div><span class="welcome-ball">🏀</span></div></section>${notificationPanel}${categoryNotice}
     <section class="member-stats">
       <article class="member-stat"><span class="member-stat-icon green-icon">◷</span><p>الموعد القادم</p><strong>${nextSession ? `${escapeHtml(weekdayForDate(localDateString(nextSession.date)))} · ${escapeHtml(egyptianDate.format(nextSession.date))}` : "لا يوجد تدريب"}</strong><small>${escapeHtml(nextSession ? `${sessionTimeRange(nextSession.session)} · ${nextSession.session.title}` : "تظهر المواعيد بعد إضافتها من الأكاديمية")}</small></article>
       <article class="member-stat"><span class="member-stat-icon blue-icon">✓</span><p>التمارين المتبقية</p><strong>${arabicDigits(Math.max(0, sessionsLeft))} تمرين</strong><small>من ${arabicDigits(planInfo.plan.sessions)} تدريبات في الباقة</small></article>
@@ -1295,12 +1325,12 @@ function sessionCards(sessions, showCoach = false, member = null) {
       const days = sessionDays(session);
       const details = group.sessions.map(item => {
         const count = data.users.filter(user => user.role === "member" && sessionIncludesMember(item, user) && (user.weeklyDays || []).some(day => days.includes(day))).length;
-        return `<li><strong>${escapeHtml(item.title)}</strong> · ${escapeHtml(sessionCategoryLabel(item))} · ${escapeHtml(item.coach)} · ${arabicDigits(count)} لاعب</li>`;
+        return `<li><strong>${escapeHtml(item.title)}</strong> · ${escapeHtml(sessionCategoryLabel(item))} · ${escapeHtml(sessionGenderLabel(item))} · ${escapeHtml(item.coach)} · ${arabicDigits(count)} لاعب</li>`;
       }).join("");
       return `<article class="schedule-card"><div class="schedule-day"><strong>${escapeHtml(days.join("، "))}</strong><span>${escapeHtml(sessionTimeRange(session))}</span></div><span class="schedule-mark">🏀</span><div class="schedule-info"><strong>${escapeHtml(session.place)}</strong><ul class="training-exercise-summary">${details}</ul></div><div class="schedule-actions"><button type="button" data-action="take-attendance" data-session="${escapeHtml(session.id)}">كشف الساعة</button><button type="button" data-action="day-off" data-session="${escapeHtml(session.id)}">إعلان إجازة</button><button type="button" data-action="edit-session" data-session="${escapeHtml(session.id)}">تعديل الساعة</button><button type="button" data-action="delete-session" data-session="${escapeHtml(session.id)}">حذف الساعة</button></div></article>`;
     }).join("")}</div>`;
   }
-  return `<div class="schedule-list">${sessions.map(session => { const days = sessionDays(session); const playerCount = data.users.filter(user => user.role === "member" && sessionIncludesMember(session, user) && (user.weeklyDays || []).some(day => days.includes(day))).length; const categoryLabel = member ? (sessionMatchesMemberDays(session, member) ? "مناسب لأيام تدريبك" : "موعد متاح لفئتك") : sessionCategoryLabel(session); return `<article class="schedule-card"><div class="schedule-day"><strong>${escapeHtml(days.join("، "))}</strong><span>${escapeHtml(sessionTimeRange(session))}</span></div><span class="schedule-mark">🏀</span><div class="schedule-info"><strong>${escapeHtml(member ? readableSessionTitle(session.title) : session.title)}</strong><span>${escapeHtml(session.place)} · ${escapeHtml(session.coach)}</span>${showCoach ? `<small>الفئة: ${escapeHtml(sessionCategoryLabel(session))} · ${arabicDigits(playerCount)} لاعب مسجل</small>` : ""}</div>${showCoach ? `<div class="schedule-actions"><button type="button" data-action="take-attendance" data-session="${escapeHtml(session.id)}">كشف الحضور</button><button type="button" data-action="edit-session" data-session="${escapeHtml(session.id)}">تعديل</button><button type="button" data-action="delete-session" data-session="${escapeHtml(session.id)}">حذف</button></div>` : `<span class="schedule-category">${escapeHtml(categoryLabel)}</span>`}</article>`; }).join("")}</div>`;
+  return `<div class="schedule-list">${sessions.map(session => { const days = sessionDays(session); const playerCount = data.users.filter(user => user.role === "member" && sessionIncludesMember(session, user) && (user.weeklyDays || []).some(day => days.includes(day))).length; const categoryLabel = member ? (sessionMatchesMemberDays(session, member) ? "مناسب لأيام تدريبك" : "موعد متاح لفئتك") : sessionCategoryLabel(session); return `<article class="schedule-card"><div class="schedule-day"><strong>${escapeHtml(days.join("، "))}</strong><span>${escapeHtml(sessionTimeRange(session))}</span></div><span class="schedule-mark">🏀</span><div class="schedule-info"><strong>${escapeHtml(member ? readableSessionTitle(session.title) : session.title)}</strong><span>${escapeHtml(session.place)} · ${escapeHtml(session.coach)}</span>${showCoach ? `<small>الفئة: ${escapeHtml(sessionCategoryLabel(session))} · ${escapeHtml(sessionGenderLabel(session))} · ${arabicDigits(playerCount)} لاعب مسجل</small>` : ""}</div>${showCoach ? `<div class="schedule-actions"><button type="button" data-action="take-attendance" data-session="${escapeHtml(session.id)}">كشف الحضور</button><button type="button" data-action="edit-session" data-session="${escapeHtml(session.id)}">تعديل</button><button type="button" data-action="delete-session" data-session="${escapeHtml(session.id)}">حذف</button></div>` : `<span class="schedule-category">${escapeHtml(categoryLabel)}</span>`}</article>`; }).join("")}</div>`;
 }
 
 function memberScheduleView() {
@@ -1477,7 +1507,8 @@ function openPlayerFormFor(player = null) {
   if (!data.workDays.length) { showToast("لم يحدد المشرف أيام عمل الأكاديمية بعد."); return; }
   const title = isExistingPlayer ? "استكمال بيانات اللاعب" : "إضافة لاعب إلى حساب ولي الأمر";
   const nameField = `<label>اسم اللاعب<input name="name" required minlength="2" maxlength="80" ${isExistingPlayer ? "readonly" : ""} value="${escapeHtml(player?.name || "")}" placeholder="اسم اللاعب بالكامل"></label>`;
-  openModal(title, `${nameField}<fieldset class="registration-birth-date"><legend>تاريخ ميلاد اللاعب</legend><div class="birth-date-fields"><label>اليوم<input name="birthDay" type="text" inputmode="numeric" pattern="[0-9٠-٩]{1,2}" maxlength="2" required placeholder="يوم"></label><label>الشهر<input name="birthMonth" type="text" inputmode="numeric" pattern="[0-9٠-٩]{1,2}" maxlength="2" required placeholder="شهر"></label><label>السنة<input name="birthYear" type="text" inputmode="numeric" pattern="[0-9٠-٩]{4}" maxlength="4" required placeholder="سنة"></label></div></fieldset><fieldset class="registration-days"><legend>أيام حضور اللاعب أسبوعيًا</legend><div class="day-choice-grid">${dayCheckboxes(data.workDays, player?.weeklyDays || [])}</div></fieldset><p class="modal-explainer">${isExistingPlayer ? `كود اللاعب ${escapeHtml(player.playerCode)} ثابت ولن يتغير.` : "سيُنشأ كود رقمي ثابت للاعب تلقائيًا. يعرضه اللاعب للمشرف لتسجيل حضوره."}</p>`, isExistingPlayer ? "حفظ البيانات" : "حفظ اللاعب", form => savePlayer(form, player?.id), "حساب ولي الأمر");
+  const genderField = `<label>نوع اللاعب<select name="gender" required><option value="">اختر النوع</option><option value="male" ${player?.gender === "male" ? "selected" : ""}>ذكر</option><option value="female" ${player?.gender === "female" ? "selected" : ""}>أنثى</option></select></label>`;
+  openModal(title, `${nameField}${genderField}<fieldset class="registration-birth-date"><legend>تاريخ ميلاد اللاعب</legend><div class="birth-date-fields"><label>اليوم<input name="birthDay" type="text" inputmode="numeric" pattern="[0-9٠-٩]{1,2}" maxlength="2" required placeholder="يوم"></label><label>الشهر<input name="birthMonth" type="text" inputmode="numeric" pattern="[0-9٠-٩]{1,2}" maxlength="2" required placeholder="شهر"></label><label>السنة<input name="birthYear" type="text" inputmode="numeric" pattern="[0-9٠-٩]{4}" maxlength="4" required placeholder="سنة"></label></div></fieldset><fieldset class="registration-days"><legend>أيام حضور اللاعب أسبوعيًا</legend><div class="day-choice-grid">${dayCheckboxes(data.workDays, player?.weeklyDays || [])}</div></fieldset><p class="modal-explainer">${isExistingPlayer ? `كود اللاعب ${escapeHtml(player.playerCode)} ثابت ولن يتغير. تغيير الفئة العمرية عند بلوغ الحد يتطلب موافقة المشرف.` : "سيُنشأ كود رقمي ثابت للاعب تلقائيًا. يعرضه اللاعب للمشرف لتسجيل حضوره."}</p>`, isExistingPlayer ? "حفظ البيانات" : "حفظ اللاعب", form => savePlayer(form, player?.id), "حساب ولي الأمر");
 }
 
 function openPlayerCodeLogin() {
@@ -1507,12 +1538,14 @@ async function savePlayer(form, playerId = null) {
   const month = Number(normalizeDigits(String(form.get("birthMonth")).trim()));
   const year = Number(normalizeDigits(String(form.get("birthYear")).trim()));
   const birthDate = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  const gender = String(form.get("gender") || "");
   const weeklyDays = form.getAll("weeklyDays").map(String).filter(day => data.workDays.includes(day));
   const birthday = new Date(`${birthDate}T12:00:00`);
-  if (name.length < 2 || !Number.isInteger(day) || !Number.isInteger(month) || !Number.isInteger(year) || year < 1000 || Number.isNaN(birthday.getTime()) || birthday.getFullYear() !== year || birthday.getMonth() !== month - 1 || birthday.getDate() !== day) {
+  if (name.length < 2 || !Number.isInteger(day) || !Number.isInteger(month) || !Number.isInteger(year) || year < 1000 || Number.isNaN(birthday.getTime()) || birthday.getFullYear() !== year || birthday.getMonth() !== month - 1 || birthday.getDate() !== day || birthDate > localDateString()) {
     showToast("أدخل يومًا وشهرًا وسنة صحيحة لتاريخ الميلاد.");
     return;
   }
+  if (!["male", "female"].includes(gender)) { showToast("اختر نوع اللاعب: ذكر أو أنثى."); return; }
   if (!weeklyDays.length) { showToast("اختر يوم تدريب واحدًا على الأقل للاعب."); return; }
   const guardian = currentUser;
   const existingPlayer = playerId ? data.users.find(user => user.id === playerId && user.role === "member" && user.guardianId === guardian.id) : null;
@@ -1521,8 +1554,11 @@ async function savePlayer(form, playerId = null) {
     ...(existingPlayer || {}),
     id: existingPlayer?.id || crypto.randomUUID(), role: "member", guardianId: guardian.id,
     playerCode: existingPlayer?.playerCode || "", joinedAt: existingPlayer?.joinedAt || new Date().toISOString(),
-    name, birthDate, guardian: guardian.name, guardianPhone: guardian.guardianPhone,
-    whatsappPhone: guardian.whatsappPhone, category: playerCategoryForBirthDate(birthDate),
+    name, birthDate, gender, guardian: guardian.name, guardianPhone: guardian.guardianPhone,
+    whatsappPhone: guardian.whatsappPhone,
+    category: !existingPlayer || !AGE_CATEGORIES.includes(existingPlayer.category) || existingPlayer.category === "جميع الفئات العمرية"
+      ? playerCategoryForBirthDate(birthDate)
+      : existingPlayer.category,
     weeklyDays, weeklyDaysCount: weeklyDays.length, plan: weeklyDays.length,
     sessionsLeft: existingPlayer?.sessionsLeft || 0, sessionsUsed: existingPlayer?.sessionsUsed || 0,
     subscriptionEnd: existingPlayer?.subscriptionEnd || null
@@ -1544,6 +1580,21 @@ async function savePlayer(form, playerId = null) {
   closeModal();
   renderView();
   showToast(existingPlayer ? `تم استكمال بيانات ${name} مع الحفاظ على كوده ${savedUser.playerCode}.` : `تمت إضافة ${name}. كود اللاعب ${savedUser.playerCode} ثابت لهذا الحساب.`);
+}
+
+function approvePlayerCategory(playerId) {
+  if (currentUser?.role !== "coach") { showToast("اعتماد الفئات العمرية متاح للمشرف فقط."); return; }
+  const player = data.users.find(user => user.id === playerId && user.role === "member");
+  const nextCategory = pendingPlayerCategory(player);
+  if (!player || !nextCategory) { showToast("لا يوجد انتقال فئة عمرية بانتظار الاعتماد لهذا اللاعب."); return; }
+  const previousCategory = player.category;
+  player.category = nextCategory;
+  if (saveData()) {
+    renderView();
+    showToast(`تم اعتماد انتقال ${player.name} إلى فئة ${nextCategory}.`);
+  } else {
+    player.category = previousCategory;
+  }
 }
 
 async function saveTrainer(form) {
@@ -2116,7 +2167,7 @@ function coachPlayersView() {
   const guardians = data.users.filter(user => user.role === "guardian");
   const guardianRows = guardians.map(guardian => {
     const children = childrenForGuardian(guardian.id);
-    return `<tr><td>${escapeHtml(guardian.name)}</td><td>${escapeHtml(guardian.guardianPhone || "—")}<br>${escapeHtml(guardian.whatsappPhone || "—")}</td><td>${escapeHtml(guardian.email || "—")}</td><td>${children.map(child => `${escapeHtml(child.name)} · ${escapeHtml(child.birthDate || "—")} · كود ${escapeHtml(child.playerCode)}`).join("<br>") || "لا يوجد لاعبون"}</td><td><button class="small-action danger-action" data-action="delete-guardian" data-guardian="${escapeHtml(guardian.id)}">حذف ولي الأمر وأبنائه</button></td></tr>`;
+    return `<tr data-coach-search-row data-search-parent="${escapeHtml(guardian.name)}"><td>${escapeHtml(guardian.name)}</td><td>${escapeHtml(guardian.guardianPhone || "—")}<br>${escapeHtml(guardian.whatsappPhone || "—")}</td><td>${escapeHtml(guardian.email || "—")}</td><td>${children.map(child => `${escapeHtml(child.name)} · ${escapeHtml(child.birthDate || "—")} · كود ${escapeHtml(child.playerCode)}`).join("<br>") || "لا يوجد لاعبون"}</td><td><button class="small-action danger-action" data-action="delete-guardian" data-guardian="${escapeHtml(guardian.id)}">حذف ولي الأمر وأبنائه</button></td></tr>`;
   }).join("");
   const playerRows = users.map(user => {
     const state = subscriptionState(user);
@@ -2134,9 +2185,10 @@ function coachPlayersView() {
     const cashRemaining = Math.max(0, priceSummary(user.weeklyDays?.length || user.weeklyDaysCount).plan.price - cashPartial);
     const cashDebt = Math.max(0, Number(user.cashDebt || 0));
     const walletBalance = memberWalletBalance(user);
-    return `<tr><td class="player-code">${escapeHtml(user.playerCode)}</td><td>${escapeHtml(user.name)}<small class="table-subtext">${escapeHtml(guardian?.name || user.guardian || "")}</small></td><td>${escapeHtml(user.birthDate || "—")}<br>${escapeHtml(user.category)}</td><td>${escapeHtml((user.weeklyDays || []).join("، ") || "لم يختر")}<br>${schedules || "لا توجد مجموعة مرشحة"}</td><td>${arabicDigits(totalPaid)} ج.م${walletBalance ? `<small class="table-subtext">رصيد دائن بالمحفظة: ${arabicDigits(walletBalance)} ج.م</small>` : ""}${cashPartial ? `<small class="table-subtext">دفع نقدًا ${arabicDigits(cashPartial)} ج.م · المتبقي ${arabicDigits(cashRemaining)} ج.م لإكمال الاشتراك</small>` : ""}${cashDebt ? `<small class="table-subtext">رصيد متبقٍ مستحق: ${arabicDigits(cashDebt)} ج.م</small>` : ""}</td><td>${latestPayment ? `${escapeHtml(paymentMethodLabel(latestPayment))} · ${escapeHtml(latestPayment.date || "—")} · ${escapeHtml(latestPayment.paidTime || "—")}` : "لا توجد دفعات مؤكدة"}</td><td>${user.subscriptionEnd ? egyptianDate.format(new Date(`${user.subscriptionEnd}T12:00:00`)) : "غير مفعّل"}<br><span class="subscription-badge ${state.className}">${state.label}</span><br>متبقي ${arabicDigits(user.sessionsLeft || 0)} تمرين</td><td><button class="small-action" data-action="cash-payment" data-player="${escapeHtml(user.id)}" ${canRequestPayment(user) ? "" : "disabled"}>تسجيل دفع نقدي</button>${cashDebt ? `<button class="small-action" data-action="cash-debt-payment" data-player="${escapeHtml(user.id)}">تحصيل الرصيد المستحق</button>` : ""}${state.label === "منتهي" ? guardianWhatsApp(user, expiredMessage, "إشعار انتهاء الاشتراك") : ""}</td></tr>`;
+    const nextCategory = pendingPlayerCategory(user);
+    return `<tr data-coach-search-row data-search-code="${escapeHtml(user.playerCode || "")}" data-search-parent="${escapeHtml(guardian?.name || user.guardian || "")}"><td class="player-code">${escapeHtml(user.playerCode)}</td><td>${escapeHtml(user.name)}<small class="table-subtext">${escapeHtml(guardian?.name || user.guardian || "")}</small></td><td>${escapeHtml(user.birthDate || "—")}<br>${escapeHtml(genderLabel(user.gender))}<br>${escapeHtml(user.category)}${nextCategory ? `<small class="table-subtext">الفئة التالية: ${escapeHtml(nextCategory)}</small>` : ""}</td><td>${escapeHtml((user.weeklyDays || []).join("، ") || "لم يختر")}<br>${schedules || "لا توجد مجموعة مرشحة"}</td><td>${arabicDigits(totalPaid)} ج.م${walletBalance ? `<small class="table-subtext">رصيد دائن بالمحفظة: ${arabicDigits(walletBalance)} ج.م</small>` : ""}${cashPartial ? `<small class="table-subtext">دفع نقدًا ${arabicDigits(cashPartial)} ج.م · المتبقي ${arabicDigits(cashRemaining)} ج.م لإكمال الاشتراك</small>` : ""}${cashDebt ? `<small class="table-subtext">رصيد متبقٍ مستحق: ${arabicDigits(cashDebt)} ج.م</small>` : ""}</td><td>${latestPayment ? `${escapeHtml(paymentMethodLabel(latestPayment))} · ${escapeHtml(latestPayment.date || "—")} · ${escapeHtml(latestPayment.paidTime || "—")}` : "لا توجد دفعات مؤكدة"}</td><td>${user.subscriptionEnd ? egyptianDate.format(new Date(`${user.subscriptionEnd}T12:00:00`)) : "غير مفعّل"}<br><span class="subscription-badge ${state.className}">${state.label}</span><br>متبقي ${arabicDigits(user.sessionsLeft || 0)} تمرين</td><td>${nextCategory ? `<button class="small-action" data-action="approve-player-category" data-player="${escapeHtml(user.id)}">اعتماد ${escapeHtml(nextCategory)}</button>` : ""}<button class="small-action" data-action="cash-payment" data-player="${escapeHtml(user.id)}" ${canRequestPayment(user) ? "" : "disabled"}>تسجيل دفع نقدي</button>${cashDebt ? `<button class="small-action" data-action="cash-debt-payment" data-player="${escapeHtml(user.id)}">تحصيل الرصيد المستحق</button>` : ""}${state.label === "منتهي" ? guardianWhatsApp(user, expiredMessage, "إشعار انتهاء الاشتراك") : ""}</td></tr>`;
   }).join("");
-  return `<section class="page-intro"><div><p class="eyebrow">متابعة الحسابات والاشتراكات</p><h1>أولياء الأمور واللاعبون</h1><p class="welcome-subtitle">تظهر بيانات اللاعب وتاريخ ميلاده ومواعيده ومجموع ما دفعه. حذف الحساب لا يحذف السجلات المالية.</p></div></section><section class="panel"><div class="panel-heading"><div><h2>حسابات أولياء الأمور</h2><p>${arabicDigits(guardians.length)} ولي أمر · الحذف يزيل ولي الأمر وأطفاله فقط، وتبقى السجلات المالية محفوظة.</p></div></div>${guardians.length ? `<div class="table-wrap"><table><thead><tr><th>ولي الأمر</th><th>الهاتف / واتساب</th><th>البريد الإلكتروني</th><th>اللاعبون</th><th>إجراء الحساب</th></tr></thead><tbody>${guardianRows}</tbody></table></div>` : '<div class="empty-state"><p>لا توجد حسابات أولياء أمور بعد.</p></div>'}</section><section class="panel"><div class="panel-heading"><div><h2>سجل اللاعبين والاشتراكات</h2><p>كل الدفعات تبقى مسجلة ولا يمكن حذفها من سجل الدفع.</p></div></div>${users.length ? `<div class="table-wrap"><table><thead><tr><th>كود اللاعب</th><th>اللاعب / ولي الأمر</th><th>تاريخ الميلاد والفئة</th><th>أيام التدريب والمواعيد</th><th>إجمالي ما دفع</th><th>آخر دفعة: الطريقة والتاريخ والوقت</th><th>الانتهاء والحالة</th><th>إجراء</th></tr></thead><tbody>${playerRows}</tbody></table></div>` : '<div class="empty-state"><p>لا يوجد لاعبون مسجلون بعد.</p></div>'}</section>`;
+  return `<section class="page-intro coach-players-intro"><div><p class="eyebrow">متابعة الحسابات والاشتراكات</p><h1>أولياء الأمور واللاعبون</h1><p class="welcome-subtitle">تظهر بيانات اللاعب ونوعه وتاريخ ميلاده وفئته ومواعيده. تغيّر الفئة عند بلوغ الحد ينتظر موافقة المشرف.</p></div><label class="coach-player-search"><span aria-hidden="true">⌕</span><input id="coach-player-search" type="search" autocomplete="off" placeholder="ابحث باسم ولي الأمر أو كود اللاعب" aria-label="ابحث باسم ولي الأمر أو كود اللاعب"></label></section><section class="panel"><div class="panel-heading"><div><h2>حسابات أولياء الأمور</h2><p>${arabicDigits(guardians.length)} ولي أمر · الحذف يزيل ولي الأمر وأطفاله فقط، وتبقى السجلات المالية محفوظة.</p></div></div>${guardians.length ? `<div class="table-wrap"><table><thead><tr><th>ولي الأمر</th><th>الهاتف / واتساب</th><th>البريد الإلكتروني</th><th>اللاعبون</th><th>إجراء الحساب</th></tr></thead><tbody>${guardianRows}<tr data-search-empty hidden><td colspan="5">لا توجد نتائج مطابقة.</td></tr></tbody></table></div>` : '<div class="empty-state"><p>لا توجد حسابات أولياء أمور بعد.</p></div>'}</section><section class="panel"><div class="panel-heading"><div><h2>سجل اللاعبين والاشتراكات</h2><p>كل الدفعات تبقى مسجلة ولا يمكن حذفها من سجل الدفع.</p></div></div>${users.length ? `<div class="table-wrap"><table><thead><tr><th>كود اللاعب</th><th>اللاعب / ولي الأمر</th><th>النوع وتاريخ الميلاد والفئة</th><th>أيام التدريب والمواعيد</th><th>إجمالي ما دفع</th><th>آخر دفعة: الطريقة والتاريخ والوقت</th><th>الانتهاء والحالة</th><th>إجراء</th></tr></thead><tbody>${playerRows}<tr data-search-empty hidden><td colspan="8">لا توجد نتائج مطابقة.</td></tr></tbody></table></div>` : '<div class="empty-state"><p>لا يوجد لاعبون مسجلون بعد.</p></div>'}</section>`;
 }
 
 async function deleteGuardian(guardianId) {
@@ -2413,7 +2465,8 @@ function trainingExerciseRows(exercises, trainers) {
     const trainerOptions = trainers.map(trainer => `<option value="${escapeHtml(trainer.id)}" ${exercise.coachId === trainer.id ? "selected" : ""}>${escapeHtml(trainer.name)}</option>`).join("");
     const categories = new Set(exercise.categories || []);
     const categoryOptions = AGE_CATEGORIES.map(category => `<label class="day-choice"><input type="checkbox" name="categories-${index}" value="${escapeHtml(category)}" ${categories.has(category) ? "checked" : ""}><span>${escapeHtml(category)}</span></label>`).join("");
-    return `<fieldset class="training-exercise"><legend>التمرين ${arabicDigits(index + 1)}</legend><label>اسم التمرين<input name="title-${index}" required maxlength="100" value="${escapeHtml(exercise.title || "")}" placeholder="تدريب كرة السلة"></label><label>المدرب المسؤول<select name="coachId-${index}" required><option value="">اختر المدرب</option>${trainerOptions}</select></label><fieldset class="registration-days"><legend>الفئات العمرية لهذا التمرين</legend><div class="day-choice-grid">${categoryOptions}</div></fieldset></fieldset>`;
+    const genderOptions = `<option value="">اختر النوع</option><option value="male" ${exercise.gender === "male" ? "selected" : ""}>ولاد</option><option value="female" ${exercise.gender === "female" ? "selected" : ""}>بنات</option><option value="all" ${exercise.gender === "all" ? "selected" : ""}>الكل</option>`;
+    return `<fieldset class="training-exercise"><legend>التمرين ${arabicDigits(index + 1)}</legend><label>اسم التمرين<input name="title-${index}" required maxlength="100" value="${escapeHtml(exercise.title || "")}" placeholder="تدريب كرة السلة"></label><label>المدرب المسؤول<select name="coachId-${index}" required><option value="">اختر المدرب</option>${trainerOptions}</select></label><label>النوع<select name="gender-${index}" required>${genderOptions}</select></label><fieldset class="registration-days"><legend>الفئات العمرية لهذا التمرين</legend><div class="day-choice-grid">${categoryOptions}</div><p class="form-note">يمكن اختيار أكثر من فئة عمرية للتمرين نفسه.</p></fieldset></fieldset>`;
   }).join("");
 }
 
@@ -2422,6 +2475,7 @@ function exerciseValuesFromForm(form, count) {
   return Array.from({ length: count }, (_, index) => ({
     title: String(values.get(`title-${index}`) || ""),
     coachId: String(values.get(`coachId-${index}`) || ""),
+    gender: String(values.get(`gender-${index}`) || ""),
     categories: values.getAll(`categories-${index}`).map(String)
   }));
 }
@@ -2436,9 +2490,9 @@ function openSessionForm(existingSession = null) {
   const session = sessions[0] || {};
   const dayOptions = dayCheckboxes(data.workDays, sessionDays(session), "sessionDays");
   const count = Math.max(sessions.length, 1);
-  const exercises = sessions.length ? sessions.map(item => ({ ...item, categories: sessionCategories(item) })) : [{ title: "", coachId: "", categories: [] }];
+  const exercises = sessions.length ? sessions.map(item => ({ ...item, gender: ["male", "female"].includes(item.gender) ? item.gender : "all", categories: sessionCategories(item) })) : [{ title: "", coachId: "", gender: "", categories: [] }];
   const countOptions = Array.from({ length: 12 }, (_, index) => index + 1).map(value => `<option value="${value}" ${value === count ? "selected" : ""}>${arabicDigits(value)} ${value === 1 ? "تمرين" : "تمارين"}</option>`).join("");
-  const fields = `<div class="form-row session-time-row">${sessionTimePicker("time", "ساعة البداية", session.time)}${sessionTimePicker("endTime", "ساعة النهاية", session.endTime)}</div><label>عدد التمارين في هذه الساعة<select name="exerciseCount" id="training-count" required>${countOptions}</select></label><fieldset class="registration-days"><legend>أيام التدريب</legend><div class="day-choice-grid">${dayOptions}</div></fieldset><label>الملعب<input name="place" required value="${escapeHtml(session.place || "")}" placeholder="ملعب الأكاديمية"></label><div id="training-exercises">${trainingExerciseRows(exercises, trainers)}</div><p class="modal-explainer">حدد الموعد أولًا؛ كل التمارين هنا تشترك في وقت البداية والنهاية. لكل تمرين يمكن اختيار فئة عمرية ومدرب مسؤول مختلفين.</p>`;
+  const fields = `<div class="form-row session-time-row">${sessionTimePicker("time", "ساعة البداية", session.time)}${sessionTimePicker("endTime", "ساعة النهاية", session.endTime)}</div><label>عدد التمارين في هذه الساعة<select name="exerciseCount" id="training-count" required>${countOptions}</select></label><fieldset class="registration-days"><legend>أيام التدريب</legend><div class="day-choice-grid">${dayOptions}</div></fieldset><label>الملعب<input name="place" required value="${escapeHtml(session.place || "")}" placeholder="ملعب الأكاديمية"></label><div id="training-exercises">${trainingExerciseRows(exercises, trainers)}</div><p class="modal-explainer">حدد الموعد أولًا؛ كل التمارين هنا تشترك في وقت البداية والنهاية. لكل تمرين اختر نوع اللاعبين والفئات العمرية والمدرب المسؤول. يمكن إسناد المدرب نفسه لأكثر من فئة عمرية.</p>`;
   openModal(existingSession ? "تعديل ساعة التدريب وتمارينها" : "إضافة ساعة تدريب", fields, existingSession ? "حفظ التعديلات" : "إضافة الساعة والتمارين", form => saveSession(form, existingGroup?.id), "جدول التدريبات");
 }
 
@@ -2458,8 +2512,8 @@ async function saveSession(form, groupId) {
   for (const [index, exercise] of exercises.entries()) {
     const trainer = data.users.find(user => user.id === exercise.coachId && user.role === "trainer");
     const categories = [...new Set(exercise.categories.filter(category => AGE_CATEGORIES.includes(category)))];
-    if (!String(exercise.title).trim() || !trainer || !categories.length) {
-      showToast(`أكمل اسم التمرين والمدرب وفئة عمرية واحدة على الأقل للتمرين ${arabicDigits(index + 1)}.`);
+    if (!String(exercise.title).trim() || !trainer || !categories.length || !["male", "female", "all"].includes(exercise.gender)) {
+      showToast(`أكمل اسم التمرين والمدرب والنوع وفئة عمرية واحدة على الأقل للتمرين ${arabicDigits(index + 1)}.`);
       return;
     }
   }
@@ -2475,6 +2529,7 @@ async function saveSession(form, groupId) {
       title: String(exercise.title).trim(),
       coach: trainer.name,
       coachId: trainer.id,
+      gender: exercise.gender,
       days,
       day: days[0],
       time,
@@ -2795,20 +2850,34 @@ function cashPaymentEligibility(user) {
     && (details.remainingAmount > 0 || details.walletBalance > 0);
 }
 
+function qualifiesForSiblingDiscount(user) {
+  return Number(user.weeklyDays?.length || user.weeklyDaysCount || 0) >= MIN_SIBLING_DISCOUNT_TRAINING_DAYS;
+}
+
 function cashPaymentQuote(players) {
-  const balances = players.map(user => ({ user, ...cashPaymentDetails(user) }));
-  const baseTotal = balances.reduce((total, item) => total + item.remainingAmount, 0);
   const guardianId = players[0]?.guardianId;
   const siblings = guardianId
     ? data.users.filter(user => user.role === "member" && user.guardianId === guardianId)
     : [];
-  const eligibleForSiblingDiscount = siblings.length === 3
-    && siblings.filter(sibling => (sibling.weeklyDays?.length || sibling.weeklyDaysCount) === 3).length >= 2;
-  const siblingIds = new Set(siblings.map(sibling => sibling.id));
-  const discountAlreadyApplied = data.payments
-    .filter(payment => siblingIds.has(payment.playerId) && ["دفع جزئي نقدًا", "تم تطبيق خصم إخوة"].includes(payment.status))
-    .reduce((total, payment) => total + Number(payment.siblingDiscount || 0), 0);
-  const discount = eligibleForSiblingDiscount ? Math.min(Math.max(0, 50 - discountAlreadyApplied), baseTotal) : 0;
+  const qualifyingSiblings = siblings.filter(qualifiesForSiblingDiscount);
+  const familyQualifies = siblings.length >= 2 && qualifyingSiblings.length >= 2;
+  const qualifyingSiblingIds = new Set(qualifyingSiblings.map(sibling => sibling.id));
+  const balances = players.map(user => {
+    const details = cashPaymentDetails(user);
+    const previousSiblingDiscount = data.payments
+      .filter(payment => payment.playerId === user.id
+        && ["دفع جزئي نقدًا", "تم تطبيق خصم إخوة"].includes(payment.status))
+      .reduce((total, payment) => total + Number(payment.siblingDiscount || 0), 0);
+    const siblingDiscount = familyQualifies && qualifyingSiblingIds.has(user.id)
+      ? Math.min(
+        Math.max(0, SIBLING_DISCOUNT_PER_PLAYER - previousSiblingDiscount),
+        details.remainingAmount
+      )
+      : 0;
+    return { user, ...details, siblingDiscount };
+  });
+  const baseTotal = balances.reduce((total, item) => total + item.remainingAmount, 0);
+  const discount = balances.reduce((total, item) => total + item.siblingDiscount, 0);
   return { balances, baseTotal, discount, total: baseTotal - discount };
 }
 
@@ -2837,18 +2906,23 @@ function recordCashPayment(playerId) {
   if (!details.remainingAmount && !details.walletBalance) { showToast("اكتمل مبلغ الاشتراك نقدًا بالفعل. لا يمكن تسجيل دفعة أخرى له."); return; }
   const siblings = data.users.filter(item => item.role === "member" && item.guardianId === user.guardianId);
   const selectablePlayers = siblings.length ? siblings : [user];
+  const familyDiscounts = new Map(cashPaymentQuote(selectablePlayers).balances.map(balance => [balance.user.id, balance.siblingDiscount]));
   const playerOptions = selectablePlayers.map(sibling => {
     const siblingDetails = cashPaymentDetails(sibling);
     const isEligible = cashPaymentEligibility(sibling);
-    const description = `${siblingDetails.plan.name} · رصيد ${arabicDigits(siblingDetails.walletBalance)} ج.م · مستحق نقدًا ${arabicDigits(siblingDetails.remainingAmount)} ج.م${isEligible ? "" : " · غير متاح للدفع حاليًا"}`;
+    const siblingDiscount = familyDiscounts.get(sibling.id) || 0;
+    const description = `${siblingDetails.plan.name} · رصيد ${arabicDigits(siblingDetails.walletBalance)} ج.م · مستحق نقدًا ${arabicDigits(siblingDetails.remainingAmount)} ج.م${siblingDiscount ? ` · خصم إخوة ${arabicDigits(siblingDiscount)} ج.م` : ""}${isEligible ? "" : " · غير متاح للدفع حاليًا"}`;
     const checked = sibling.id === user.id;
     return `<div class="cash-sibling-option"><label class="cash-sibling-choice"><input type="checkbox" name="playerIds" value="${escapeHtml(sibling.id)}" ${checked ? "checked data-primary-player" : ""} ${isEligible ? "" : "disabled"}><span><strong>${escapeHtml(sibling.name)}</strong><small>${escapeHtml(description)}${isEligible ? " · تاريخ البداية يحدده أقرب تمرين متاح تلقائيًا" : ""}</small></span></label></div>`;
   }).join("");
   const quote = cashPaymentQuote([user]);
+  const discountMessage = quote.discount
+    ? `تم احتساب خصم إخوة ${arabicDigits(quote.discount)} ج.م لهذا اللاعب.`
+    : `يشترط وجود أخوين أو أكثر، وأن يحقق اثنان منهم على الأقل الحد الأدنى وهو ${arabicDigits(MIN_SIBLING_DISCOUNT_TRAINING_DAYS)} يوم تدريب أسبوعيًا. يخصم ${arabicDigits(SIBLING_DISCOUNT_PER_PLAYER)} ج.م لكل لاعب مؤهل.`;
   const now = new Date();
   const paidDate = localDateString(now);
   const paidTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-  openModal(`تسجيل دفع نقدي · ${user.name}`, `<fieldset class="cash-sibling-list"><legend>اللاعبون الذين يسددون معًا</legend>${playerOptions}</fieldset><p class="modal-explainer" id="cash-payment-summary">الإجمالي المستحق بعد خصم أرصدة المحفظة: ${arabicDigits(quote.total)} ج.م. يطبق خصم الإخوة تلقائيًا عند وجود ٣ إخوة، واشتراك اثنين منهم على الأقل في ٣ أيام تدريب، على النقد فقط.</p><label>المبلغ النقدي المستلم<input name="amount" type="number" min="${quote.total ? 1 : 0}" max="${quote.total}" step="1" value="${quote.total}" required></label><fieldset class="registration-days" id="cash-shortage-options" hidden><legend>المبلغ أقل من المستحق — حدد معالجة الفرق</legend><label class="day-choice"><input type="radio" name="shortageResolution" value="discount"><span>نفس الباقة، واعتبار الفرق خصمًا استثنائيًا دون رصيد مستحق</span></label><label class="day-choice"><input type="radio" name="shortageResolution" value="debt"><span>نفس الباقة، وتسجيل الباقي كرصيد مستحق (محدد تلقائيًا)</span></label><label class="day-choice"><input type="radio" name="shortageResolution" value="downgrade"><span>تخفيض الباقة إلى أعلى باقة يغطيها المبلغ المقبوض ورصيد المحفظة</span></label></fieldset><div class="form-row"><label>تاريخ الدفع<input name="paidDate" type="date" max="${localDateString()}" value="${paidDate}" required></label><label>ساعة الدفع<input name="paidTime" type="time" value="${paidTime}" required></label></div>`, "تسجيل الدفع النقدي", form => saveCashPayment(form, user.id), "المدفوعات");
+  openModal(`تسجيل دفع نقدي · ${user.name}`, `<fieldset class="cash-sibling-list"><legend>اللاعبون الذين يسددون معًا</legend>${playerOptions}</fieldset><p class="modal-explainer" id="cash-payment-summary">الإجمالي المستحق بعد خصم أرصدة المحفظة: ${arabicDigits(quote.total)} ج.م. ${discountMessage}</p><label>المبلغ النقدي المستلم<input name="amount" type="number" min="${quote.total ? 1 : 0}" max="${quote.total}" step="1" value="${quote.total}" required></label><fieldset class="registration-days" id="cash-shortage-options" hidden><legend>المبلغ أقل من المستحق — حدد معالجة الفرق</legend><label class="day-choice"><input type="radio" name="shortageResolution" value="discount"><span>نفس الباقة، واعتبار الفرق خصمًا استثنائيًا دون رصيد مستحق</span></label><label class="day-choice"><input type="radio" name="shortageResolution" value="debt"><span>نفس الباقة، وتسجيل الباقي كرصيد مستحق (محدد تلقائيًا)</span></label><label class="day-choice"><input type="radio" name="shortageResolution" value="downgrade"><span>تخفيض الباقة إلى أعلى باقة يغطيها المبلغ المقبوض ورصيد المحفظة</span></label></fieldset><div class="form-row"><label>تاريخ الدفع<input name="paidDate" type="date" max="${localDateString()}" value="${paidDate}" required></label><label>ساعة الدفع<input name="paidTime" type="time" value="${paidTime}" required></label></div>`, "تسجيل الدفع النقدي", form => saveCashPayment(form, user.id), "المدفوعات");
   const form = byId("action-form");
   form.addEventListener("change", event => {
     if (!(event.target instanceof HTMLInputElement) || event.target.name !== "playerIds") return;
@@ -2865,7 +2939,7 @@ function recordCashPayment(playerId) {
     amountInput.min = updatedQuote.total ? "1" : "0";
     amountInput.max = String(updatedQuote.total);
     amountInput.value = String(updatedQuote.total);
-    summary.textContent = `الإجمالي المستحق بعد الخصم النقدي المسموح: ${arabicDigits(updatedQuote.total)} ج.م. ${updatedQuote.discount ? `يشمل خصم إخوة ${arabicDigits(updatedQuote.discount)} ج.م. (عند وجود ٣ إخوة، اثنان منهم على الأقل يتدربان ٣ أيام).` : "لا ينطبق خصم إخوة على الاختيار الحالي."}`;
+    summary.textContent = `الإجمالي المستحق بعد الخصم النقدي المسموح: ${arabicDigits(updatedQuote.total)} ج.م. ${updatedQuote.discount ? `يشمل خصم إخوة ${arabicDigits(updatedQuote.discount)} ج.م، بواقع ٥٠ ج.م لكل لاعب مؤهل.` : "لا ينطبق خصم إخوة على الاختيار الحالي."}`;
     updateCashShortageOptions(form, updatedQuote.total);
   });
   form.querySelector('input[name="amount"]').addEventListener("input", () => {
@@ -2910,11 +2984,9 @@ function saveCashPayment(form, playerId) {
     return;
   }
   const siblingDiscount = discount;
-  let remainingDiscount = siblingDiscount;
   let remainingAmount = amount;
   const allocations = balances.map(balance => {
-    const discountAmount = Math.min(balance.remainingAmount, remainingDiscount);
-    remainingDiscount -= discountAmount;
+    const discountAmount = balance.siblingDiscount;
     const due = balance.remainingAmount - discountAmount;
     const paid = Math.min(due, remainingAmount);
     remainingAmount -= paid;
@@ -3133,15 +3205,21 @@ byId("register-form").addEventListener("submit", event => {
   if (!/^01\d{9}$/.test(guardianPhone)) { showToast("أدخل رقم هاتف مصري صحيحًا مكوّنًا من ١١ رقمًا."); return; }
   if (!/^01\d{9}$/.test(whatsappPhone)) { showToast("أدخل رقم واتساب مصريًا مكوّنًا من ١١ رقمًا."); return; }
   const childNames = form.getAll("childName").map(value => String(value).trim());
-  if (!childNames.length || childNames.some(name => name.length < 2 || name.length > 80)) { showToast("أدخل اسمًا صحيحًا لكل ابن."); return; }
+  const childGenders = form.getAll("childGender").map(String);
+  if (!childNames.length || childNames.some(name => name.length < 2 || name.length > 80)
+    || childGenders.length !== childNames.length || childGenders.some(gender => !["male", "female"].includes(gender))) {
+    showToast("أدخل اسمًا صحيحًا واختر النوع لكل لاعب.");
+    return;
+  }
   const user = { role: "guardian", name: String(form.get("guardianName")).trim(), guardianPhone, whatsappPhone, email, password: String(form.get("password")), joinedAt: new Date().toISOString() };
   if (user.name.length < 2 || !email || String(form.get("password")).length < 6) { showToast("أكمل اسم ولي الأمر والبريد الإلكتروني وكلمة المرور."); return; }
-  const players = childNames.map(name => ({
+  const players = childNames.map((name, index) => ({
     id: crypto.randomUUID(),
     role: "member",
     guardianId: user.id,
     joinedAt: user.joinedAt,
     name,
+    gender: childGenders[index],
     birthDate: "",
     guardian: user.name,
     guardianPhone,
@@ -3170,7 +3248,7 @@ byId("register-form").addEventListener("submit", event => {
       const registration = await firebase.registerGuardian(user, players);
       saveNotificationConsent(registration.profile.id, consent, notificationPermission);
       registerForm.reset();
-      byId("child-name-list").innerHTML = '<div class="child-name-row"><label>اسم الابن<input name="childName" required minlength="2" maxlength="80" placeholder="اسم الابن بالكامل"></label></div>';
+      byId("child-name-list").innerHTML = '<div class="child-name-row"><label>اسم اللاعب<input name="childName" required minlength="2" maxlength="80" placeholder="اسم اللاعب بالكامل"></label><label>النوع<select name="childGender" required><option value="">اختر النوع</option><option value="male">ذكر</option><option value="female">أنثى</option></select></label></div>';
       await activateCloudProfile(registration.profile);
       showToast("تم إنشاء حساب ولي الأمر وحفظ بيانات الأبناء وأكوادهم في Firestore.");
     } catch (error) {
@@ -3186,7 +3264,7 @@ byId("register-form").addEventListener("submit", event => {
 byId("add-child-name").addEventListener("click", () => {
   const row = document.createElement("div");
   row.className = "child-name-row";
-  row.innerHTML = '<label>اسم الابن<input name="childName" required minlength="2" maxlength="80" placeholder="اسم الابن بالكامل"></label><button type="button" class="remove-child-button" data-remove-child aria-label="حذف اسم الابن">×</button>';
+  row.innerHTML = '<label>اسم اللاعب<input name="childName" required minlength="2" maxlength="80" placeholder="اسم اللاعب بالكامل"></label><label>النوع<select name="childGender" required><option value="">اختر النوع</option><option value="male">ذكر</option><option value="female">أنثى</option></select></label><button type="button" class="remove-child-button" data-remove-child aria-label="حذف اسم اللاعب">×</button>';
   byId("child-name-list").append(row);
   row.querySelector("input").focus();
 });
@@ -3262,7 +3340,7 @@ document.addEventListener("click", event => {
     renderView();
     return;
   }
-  if (["new-session", "edit-session", "delete-session", "take-attendance", "day-off", "code-attendance", "cash-payment", "cash-debt-payment", "new-trainer", "mark-trainer-attendance", "new-expense", "new-revenue", "instapay-settings", "confirm-payment", "reject-payment", "receipt-preview", "approve-makeup", "reject-makeup", "delete-expense", "delete-revenue", "delete-guardian"].includes(action.dataset.action) && currentUser.role !== "coach") {
+  if (["new-session", "edit-session", "delete-session", "take-attendance", "day-off", "code-attendance", "cash-payment", "cash-debt-payment", "new-trainer", "mark-trainer-attendance", "new-expense", "new-revenue", "instapay-settings", "confirm-payment", "reject-payment", "receipt-preview", "approve-makeup", "reject-makeup", "approve-player-category", "delete-expense", "delete-revenue", "delete-guardian"].includes(action.dataset.action) && currentUser.role !== "coach") {
     showToast("هذا الإجراء متاح لمشرف الأكاديمية فقط.");
     return;
   }
@@ -3298,6 +3376,7 @@ document.addEventListener("click", event => {
   if (action.dataset.action === "trainer-mark-attendance") openSearchedPlayerAttendanceForm(action.dataset.player, action.dataset.session);
   if (action.dataset.action === "cash-payment") recordCashPayment(action.dataset.player);
   if (action.dataset.action === "cash-debt-payment") recordCashDebtPayment(action.dataset.player);
+  if (action.dataset.action === "approve-player-category") approvePlayerCategory(action.dataset.player);
   if (action.dataset.action === "delete-guardian") deleteGuardian(action.dataset.guardian);
   if (action.dataset.action === "new-trainer") openTrainerForm();
   if (action.dataset.action === "mark-trainer-attendance") openTrainerAttendanceForm();
@@ -3337,7 +3416,7 @@ document.addEventListener("change", event => {
     const currentCount = form.querySelectorAll(".training-exercise").length;
     const values = exerciseValuesFromForm(form, currentCount);
     const nextCount = Number(event.target.value);
-    while (values.length < nextCount) values.push({ title: "", coachId: "", categories: [] });
+    while (values.length < nextCount) values.push({ title: "", coachId: "", gender: "", categories: [] });
     form.querySelector("#training-exercises").innerHTML = trainingExerciseRows(values.slice(0, nextCount), data.users.filter(user => user.role === "trainer"));
     return;
   }
@@ -3363,6 +3442,19 @@ document.addEventListener("change", event => {
 
 document.addEventListener("input", event => {
   if (event.target.id === "trainer-player-search" && currentUser?.role === "trainer") renderTrainerPlayerSearch(event.target.value);
+  if (event.target.id === "coach-player-search" && currentUser?.role === "coach") {
+    const query = normalizeDigits(event.target.value.trim()).toLocaleLowerCase("ar");
+    document.querySelectorAll("#portal-content [data-coach-search-row]").forEach(row => {
+      const parentName = row.dataset.searchParent?.toLocaleLowerCase("ar") || "";
+      const playerCode = normalizeDigits(row.dataset.searchCode || "");
+      row.hidden = Boolean(query) && !parentName.includes(query) && !playerCode.includes(query);
+    });
+    document.querySelectorAll("#portal-content tbody").forEach(body => {
+      const rows = [...body.querySelectorAll("[data-coach-search-row]")];
+      const emptyRow = body.querySelector("[data-search-empty]");
+      if (emptyRow) emptyRow.hidden = !query || rows.some(row => !row.hidden);
+    });
+  }
 });
 
 document.addEventListener("submit", event => {

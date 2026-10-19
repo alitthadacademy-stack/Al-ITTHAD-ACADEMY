@@ -195,18 +195,25 @@ function playerForFirestore(player) {
   return safePlayer;
 }
 
-function sessionAllowsCategory(session, category) {
+function sessionAllowsPlayer(session, player) {
   const categories = Array.isArray(session.categories) && session.categories.length
     ? session.categories
     : [session.category];
-  return categories.includes("جميع الفئات العمرية") || categories.includes(category) || category === "جميع الفئات العمرية";
+  const categoryMatches = categories.includes("جميع الفئات العمرية")
+    || categories.includes(player.category)
+    || !player.category
+    || player.category === "جميع الفئات العمرية";
+  const genderMatches = !["male", "female"].includes(session.gender)
+    || !["male", "female"].includes(player.gender)
+    || session.gender === player.gender;
+  return categoryMatches && genderMatches;
 }
 
-async function assignedTrainersFor(category) {
+async function assignedTrainersFor(player) {
   const sessions = await getDocs(collection(db, "sessions"));
   return [...new Set(sessions.docs
     .map(snapshot => snapshot.data())
-    .filter(session => sessionAllowsCategory(session, category))
+    .filter(session => sessionAllowsPlayer(session, player))
     .map(session => session.coachId)
     .filter(Boolean))];
 }
@@ -401,7 +408,7 @@ function academyServices() {
           guardianId: credential.user.uid,
           playerCode: createPlayerCode(usedCodes)
         }));
-        for (const player of registeredPlayers) player.assignedTrainerIds = await assignedTrainersFor(player.category);
+        for (const player of registeredPlayers) player.assignedTrainerIds = await assignedTrainersFor(player);
         await runTransaction(db, async transaction => {
           const profileRef = doc(db, "users", credential.user.uid);
           const profileSnapshot = await transaction.get(profileRef);
@@ -490,7 +497,7 @@ function academyServices() {
         const record = {
           ...playerForFirestore(player),
           playerCode,
-          assignedTrainerIds: await assignedTrainersFor(player.category)
+          assignedTrainerIds: await assignedTrainersFor(player)
         };
         const created = await runTransaction(db, async transaction => {
           const playerSnapshot = await transaction.get(playerRef);
@@ -609,7 +616,7 @@ function academyServices() {
         players: state.users.filter(record => record.role === "member").map(record => ({
           ...playerForFirestore(record),
           assignedTrainerIds: profile.role === "coach" ? [...new Set(state.sessions.filter(session =>
-            sessionAllowsCategory(session, record.category)
+            sessionAllowsPlayer(session, record)
           ).map(session => session.coachId).filter(Boolean))] : (record.assignedTrainerIds || []),
           ...(profile.role === "trainer" ? {
             lastAttendanceId: state.attendance.find(attendance =>

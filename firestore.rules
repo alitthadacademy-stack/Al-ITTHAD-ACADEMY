@@ -67,12 +67,20 @@ service cloud.firestore {
       allow list: if isCoach()
         || (isTrainer() && request.auth.uid in resource.data.assignedTrainerIds)
         || (isGuardian() && resource.data.guardianId == request.auth.uid);
-      allow create: if isGuardian() && request.resource.data.guardianId == request.auth.uid;
+      allow create: if isGuardian()
+        && request.resource.data.guardianId == request.auth.uid
+        && request.resource.data.keys().hasAll(['gender'])
+        && request.resource.data.gender in ['male', 'female'];
       allow update: if isCoach()
         || (isGuardian() && resource.data.guardianId == request.auth.uid
           && request.resource.data.guardianId == request.auth.uid
           && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(['birthDate', 'category', 'weeklyDays', 'weeklyDaysCount', 'plan', 'selectedSessionIds', 'updatedAt']))
+            .hasOnly(['birthDate', 'category', 'gender', 'weeklyDays', 'weeklyDaysCount', 'plan', 'selectedSessionIds', 'updatedAt'])
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['gender'])
+            || request.resource.data.gender in ['male', 'female'])
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['category'])
+            || !resource.data.keys().hasAny(['category'])
+            || resource.data.category == 'جميع الفئات العمرية'))
         || (isMember()
           && get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode == playerCode
           && request.resource.data.diff(resource.data).affectedKeys()
