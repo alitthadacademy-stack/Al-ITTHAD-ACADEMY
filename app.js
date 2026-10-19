@@ -948,6 +948,8 @@ function renderView() {
   byId("portal-back").disabled = viewHistory.length === 0;
   document.querySelectorAll(".portal-nav-item").forEach(button => button.classList.toggle("active", button.dataset.view === activeView));
   const content = byId("portal-content");
+  const notificationButton = byId("portal-notifications");
+  byId("portal-topbar-actions").insertBefore(notificationButton, byId("logout-button"));
   if (isCoach) {
     content.innerHTML = activeView === "schedule" ? coachScheduleView() : activeView === "attendance" ? coachAttendanceView() : activeView === "subscription" ? coachPlayersView() : activeView === "payments" ? coachPaymentsView() : activeView === "settings" ? coachSettingsView() : activeView === "trainers" ? coachTrainersView() : activeView === "trainerAttendance" ? supervisorTrainerAttendanceView() : activeView === "finances" ? financeView() : coachHomeView();
   } else if (isTrainer) {
@@ -956,6 +958,8 @@ function renderView() {
     if (currentUser.role === "guardian" && !childrenForGuardian().length) content.innerHTML = guardianChildBar();
     else content.innerHTML = activeView === "schedule" ? `${memberScheduleView()}${memberAttendanceView()}` : activeView === "attendance" ? memberAttendanceView() : activeView === "subscription" ? memberSubscriptionView() : activeView === "payments" ? memberPaymentsView() : memberHomeView();
   }
+  const notificationSlot = content.querySelector(".welcome-notification-slot");
+  if (notificationSlot) notificationSlot.append(notificationButton);
 }
 
 function upcomingAppointmentFor(user, sessions) {
@@ -992,7 +996,7 @@ function memberHomeView() {
   const parentName = currentUser.role === "guardian" ? currentUser.name : user.name;
   const attendanceCount = data.attendance.filter(record => record.playerId === user.id && record.status === "حاضر").length;
   const actionMessage = encodeURIComponent(`مرحبًا، أود الاستفسار عن متابعة اللاعب ${user.name}.`);
-  return `<section class="portal-welcome"><div><p class="eyebrow"><span class="live-dot"></span>${egyptianDate.format(new Date())}</p><h1>أهلًا بك يا ${escapeHtml(parentName)} <span class="wave">✦</span></h1><p class="welcome-subtitle">متابعة اللاعب: <strong>${escapeHtml(user.name)}</strong></p></div><span class="welcome-ball">🏀</span></section>${notificationPanel}
+  return `<section class="portal-welcome"><div><p class="eyebrow"><span class="live-dot"></span>${egyptianDate.format(new Date())}</p><h1>أهلًا بك يا ${escapeHtml(parentName)} <span class="wave">✦</span></h1><p class="welcome-subtitle">متابعة اللاعب: <strong>${escapeHtml(user.name)}</strong></p></div><div class="welcome-actions"><div class="welcome-notification-slot"></div><span class="welcome-ball">🏀</span></div></section>${notificationPanel}
     <section class="member-stats">
       <article class="member-stat"><span class="member-stat-icon green-icon">◷</span><p>الموعد القادم</p><strong>${nextSession ? `${escapeHtml(weekdayForDate(localDateString(nextSession.date)))} · ${escapeHtml(egyptianDate.format(nextSession.date))}` : "لا يوجد تدريب"}</strong><small>${escapeHtml(nextSession ? `${sessionTimeRange(nextSession.session)} · ${nextSession.session.title}` : "تظهر المواعيد بعد إضافتها من الأكاديمية")}</small></article>
       <article class="member-stat"><span class="member-stat-icon blue-icon">✓</span><p>التمارين المتبقية</p><strong>${arabicDigits(Math.max(0, sessionsLeft))} تمرين</strong><small>من ${arabicDigits(planInfo.plan.sessions)} تدريبات في الباقة</small></article>
