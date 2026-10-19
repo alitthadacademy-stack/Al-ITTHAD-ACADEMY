@@ -949,7 +949,15 @@ function renderView() {
   document.querySelectorAll(".portal-nav-item").forEach(button => button.classList.toggle("active", button.dataset.view === activeView));
   const content = byId("portal-content");
   const notificationButton = byId("portal-notifications");
-  byId("portal-topbar-actions").insertBefore(notificationButton, byId("logout-button"));
+  const notificationActions = byId("portal-topbar-actions");
+  const logoutButton = byId("logout-button");
+  if (notificationButton && notificationActions) {
+    if (logoutButton?.parentElement === notificationActions) {
+      notificationActions.insertBefore(notificationButton, logoutButton);
+    } else {
+      notificationActions.append(notificationButton);
+    }
+  }
   if (isCoach) {
     content.innerHTML = activeView === "schedule" ? coachScheduleView() : activeView === "attendance" ? coachAttendanceView() : activeView === "subscription" ? coachPlayersView() : activeView === "payments" ? coachPaymentsView() : activeView === "settings" ? coachSettingsView() : activeView === "trainers" ? coachTrainersView() : activeView === "trainerAttendance" ? supervisorTrainerAttendanceView() : activeView === "finances" ? financeView() : coachHomeView();
   } else if (isTrainer) {
@@ -959,7 +967,18 @@ function renderView() {
     else content.innerHTML = activeView === "schedule" ? `${memberScheduleView()}${memberAttendanceView()}` : activeView === "attendance" ? memberAttendanceView() : activeView === "subscription" ? memberSubscriptionView() : activeView === "payments" ? memberPaymentsView() : memberHomeView();
   }
   const notificationSlot = content.querySelector(".welcome-notification-slot");
-  if (notificationSlot) notificationSlot.append(notificationButton);
+  if (notificationButton && notificationSlot) {
+    notificationSlot.append(notificationButton);
+  } else if (notificationButton && notificationActions) {
+    const currentLogoutButton = byId("logout-button");
+    if (currentLogoutButton?.parentElement === notificationActions) {
+      notificationActions.insertBefore(notificationButton, currentLogoutButton);
+    } else {
+      notificationActions.append(notificationButton);
+    }
+  } else if (notificationButton) {
+    document.body.append(notificationButton);
+  }
 }
 
 function upcomingAppointmentFor(user, sessions) {
