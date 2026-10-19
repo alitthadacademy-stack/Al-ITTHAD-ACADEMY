@@ -50,11 +50,54 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 let foregroundMessageUnsubscribe = null;
 
-async function notificationTokenDocumentId(guardianId, token) {
+async function notificationTokenDocumentId(ownerUid, token) {
   const bytes = new TextEncoder().encode(token);
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   const tokenHash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
-  return `${guardianId}_${tokenHash}`;
+  return `${ownerUid}_${tokenHash}`;
+}
+
+async function paymentReferenceClaimId(reference) {
+  const normalizedReference = reference.normalize("NFKC").trim()
+    .replace(/[٠-٩]/g, digit => String("٠١٢٣٤٥٦٧٨٩".indexOf(digit)))
+    .replace(/[۰-۹]/g, digit => String("۰۱۲۳۴۵۶۷۸۹".indexOf(digit)))
+    .toLocaleUpperCase();
+  const bytes = new TextEncoder().encode(normalizedReference);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function migratePaymentReferenceClaims(payments, profile) {
+  if (profile?.role !== "coach" || auth.currentUser?.uid !== profile.id) {
+    throw new Error("ترحيل أرقام التحويل السابقة متاح للمشرف فقط.");
+  }
+  const migrationRef = doc(db, "settings", "paymentReferenceClaimsMigration");
+  const migration = await getDoc(migrationRef);
+  if (migration.exists() && migration.data().completed === true) return;
+
+  const references = [...new Set((Array.isArray(payments) ? payments : [])
+    .filter(payment => payment.method !== "cash" && Number(payment.amount) > 0)
+    .map(payment => String(payment.reference || "").normalize("NFKC").trim())
+    .filter(reference => reference.length >= 4 && reference.length <= 120
+      && !["رصيد محفظة اللاعب", "دفع نقدي في الأكاديمية", "تحصيل مديونية نقدية في الأكاديمية"].includes(reference)))];
+  for (let offset = 0; offset < references.length; offset += 200) {
+    const claims = await Promise.all(references.slice(offset, offset + 200).map(async reference => ({
+      reference,
+      claim: doc(db, "paymentReferenceClaims", await paymentReferenceClaimId(reference))
+    })));
+    await runTransaction(db, async transaction => {
+      const snapshots = await Promise.all(claims.map(item => transaction.get(item.claim)));
+      snapshots.forEach((snapshot, index) => {
+        if (!snapshot.exists()) {
+          transaction.set(claims[index].claim, {
+            ownerUid: profile.id,
+            createdAt: serverTimestamp()
+          });
+        }
+      });
+    });
+  }
+  await setDoc(migrationRef, { completed: true, updatedAt: serverTimestamp() });
 }
 
 async function messagingClient() {
@@ -69,13 +112,13 @@ async function messagingClient() {
   return { messaging, registration };
 }
 
-async function subscribeGuardianToNotifications(profile) {
+async function subscribeUserToNotifications(profile) {
   const uid = auth.currentUser?.uid;
-  if (!profile || !["guardian", "member"].includes(profile.role) || !uid) {
-    throw new Error("تفعيل إشعارات الهاتف متاح من حساب ولي الأمر أو اللاعب فقط.");
+  if (!profile || !["guardian", "member", "coach", "trainer"].includes(profile.role) || !uid) {
+    throw new Error("تفعيل إشعارات الهاتف متاح للحسابات المسجلة في الأكاديمية فقط.");
   }
-  if ((profile.role === "guardian" && uid !== profile.id)
-    || (profile.role === "member" && uid !== profile.authUid)) {
+  const profileUid = profile.role === "member" ? profile.authUid : profile.id;
+  if (uid !== profileUid) {
     throw new Error("حساب المستخدم الحالي لا يطابق ملف الإشعارات.");
   }
   if (Notification.permission !== "granted") {
@@ -87,7 +130,9 @@ async function subscribeGuardianToNotifications(profile) {
   const tokenId = await notificationTokenDocumentId(uid, token);
   await setDoc(doc(db, "notificationTokens", tokenId), {
     ownerUid: uid,
-    guardianId: profile.role === "guardian" ? profile.id : profile.guardianId,
+    ...(["guardian", "member"].includes(profile.role)
+      ? { guardianId: profile.role === "guardian" ? profile.id : profile.guardianId }
+      : {}),
     ...(profile.role === "member" ? { playerId: profile.id } : {}),
     role: profile.role,
     token,
@@ -111,13 +156,13 @@ async function subscribeGuardianToNotifications(profile) {
   return tokenId;
 }
 
-async function unsubscribeGuardianFromNotifications(profile) {
+async function unsubscribeUserFromNotifications(profile) {
   const uid = auth.currentUser?.uid;
-  if (!profile || !["guardian", "member"].includes(profile.role) || !uid) {
-    throw new Error("إدارة إشعارات الهاتف متاحة من حساب ولي الأمر أو اللاعب فقط.");
+  if (!profile || !["guardian", "member", "coach", "trainer"].includes(profile.role) || !uid) {
+    throw new Error("إدارة إشعارات الهاتف متاحة للحسابات المسجلة في الأكاديمية فقط.");
   }
-  if ((profile.role === "guardian" && uid !== profile.id)
-    || (profile.role === "member" && uid !== profile.authUid)) {
+  const profileUid = profile.role === "member" ? profile.authUid : profile.id;
+  if (uid !== profileUid) {
     throw new Error("حساب المستخدم الحالي لا يطابق ملف الإشعارات.");
   }
   const { messaging } = await messagingClient();
@@ -686,8 +731,9 @@ function academyServices() {
       if (!saved.exists()) throw new Error("تم إنشاء الإعلان ولكن تعذر تحميل النسخة المحفوظة.");
       return { ...saved.data(), id: saved.id };
     },
-    subscribeGuardianToNotifications,
-    unsubscribeGuardianFromNotifications,
+    subscribeUserToNotifications,
+    unsubscribeUserFromNotifications,
+    migratePaymentReferenceClaims,
     async saveSubscriptionRequest(subscription, payment) {
       return this.saveSubscriptionRequests([{ subscription, payment }]);
     },
@@ -699,28 +745,52 @@ function academyServices() {
       if (!auth.currentUser || submissions.some(({ payment }) => auth.currentUser.uid !== payment.guardianId)) {
         throw new Error("لا يمكن إرسال طلب اشتراك لهذا الحساب.");
       }
-      const batch = writeBatch(db);
-      const paymentBaselines = [];
-      submissions.forEach(({ subscription, payment }) => {
-        const safePayment = withoutPassword(payment);
-        batch.set(doc(db, "subscriptions", subscription.id), {
-          playerId: subscription.playerId,
-          playerCode: subscription.playerCode,
-          playerName: subscription.playerName,
-          expectedStartDate: subscription.expectedStartDate,
-          transferCode: subscription.transferCode,
-          createdAt: serverTimestamp()
-        });
-        batch.set(doc(db, "payments", payment.id), {
-          ...safePayment,
-          createdAt: payment.createdAt,
-          updatedAt: serverTimestamp()
-        });
-        paymentBaselines.push([`payments/${payment.id}`, baselineValue("payments", safePayment)]);
-      });
+      const reference = submissions[0].payment.reference;
+      if (submissions.some(({ payment }) => payment.reference !== reference)) {
+        throw new Error("تعذر التحقق من الرقم المرجعي لطلبات الدفع.");
+      }
+      const hasTransfer = submissions.some(({ payment }) => Number(payment.amount) > 0);
+      if (hasTransfer && (typeof reference !== "string" || reference.trim().length < 4 || reference.trim().length > 120)) {
+        throw new Error("أدخل رقمًا مرجعيًا صحيحًا للتحويل.");
+      }
+      const claimReference = hasTransfer
+        ? doc(db, "paymentReferenceClaims", await paymentReferenceClaimId(reference))
+        : null;
+      const paymentBaselines = submissions.map(({ payment }) => [
+        `payments/${payment.id}`,
+        baselineValue("payments", withoutPassword(payment))
+      ]);
       try {
-        await batch.commit();
+        await runTransaction(db, async transaction => {
+          if (claimReference) {
+            const existingClaim = await transaction.get(claimReference);
+            if (existingClaim.exists()) {
+              throw new Error("الرقم المرجعي خطأ، هذا الرقم مستخدم بالفعل. تحقق من الرقم المرجعي.");
+            }
+            transaction.set(claimReference, {
+              ownerUid: auth.currentUser.uid,
+              createdAt: serverTimestamp()
+            });
+          }
+          submissions.forEach(({ subscription, payment }) => {
+            const safePayment = withoutPassword(payment);
+            transaction.set(doc(db, "subscriptions", subscription.id), {
+              playerId: subscription.playerId,
+              playerCode: subscription.playerCode,
+              playerName: subscription.playerName,
+              expectedStartDate: subscription.expectedStartDate,
+              transferCode: subscription.transferCode,
+              createdAt: serverTimestamp()
+            });
+            transaction.set(doc(db, "payments", payment.id), {
+              ...safePayment,
+              createdAt: payment.createdAt,
+              updatedAt: serverTimestamp()
+            });
+          });
+        });
       } catch (error) {
+        if (error?.message?.includes("الرقم المرجعي خطأ")) throw error;
         if (error?.code === "permission-denied") {
           throw new Error("رفض Firestore حفظ طلب الاشتراك. تأكد من نشر firestore.rules وأن حساب ولي الأمر وبيانات اللاعب متطابقة.");
         }

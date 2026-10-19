@@ -200,6 +200,15 @@ service cloud.firestore {
         && request.resource.data.token is string
         && request.resource.data.token.size() > 0
         && request.resource.data.token.size() <= 4096);
+      allow create: if (isCoach() || isTrainer())
+        && request.resource.data.keys().hasAll(['ownerUid', 'role', 'token', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['ownerUid', 'role', 'token', 'updatedAt'])
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.role == userProfile(request.auth.uid).role
+        && request.resource.data.updatedAt is timestamp
+        && request.resource.data.token is string
+        && request.resource.data.token.size() > 0
+        && request.resource.data.token.size() <= 4096;
       allow update: if (isGuardian()
         && resource.data.ownerUid == request.auth.uid
         && request.resource.data.ownerUid == request.auth.uid
@@ -223,8 +232,29 @@ service cloud.firestore {
         && request.resource.data.token.size() > 0
         && request.resource.data.token.size() <= 4096
         && request.resource.data.updatedAt is timestamp);
+      allow update: if (isCoach() || isTrainer())
+        && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.role == userProfile(request.auth.uid).role
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['role', 'token', 'updatedAt'])
+        && request.resource.data.token is string
+        && request.resource.data.token.size() > 0
+        && request.resource.data.token.size() <= 4096
+        && request.resource.data.updatedAt is timestamp;
       allow delete: if isCoach()
         || (signedIn() && resource.data.ownerUid == request.auth.uid);
+    }
+
+    match /paymentReferenceClaims/{claimId} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if (isGuardian() || isCoach())
+        && request.resource.data.keys().hasAll(['ownerUid', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['ownerUid', 'createdAt'])
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.createdAt is timestamp;
+      allow update, delete: if false;
     }
 
     match /announcements/{announcementId} {
