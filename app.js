@@ -879,6 +879,36 @@ function sessionForPlayerInSlot(player, slot, isoDate = localDateString()) {
   return slot.sessions.find(session => sessionIncludesMember(session, player) && sessionDays(session).includes(weekday));
 }
 
+function legacyProjectedEndDate(player, startDate, weeklyDays = player?.weeklyDays) {
+  if (!isValidIsoDate(startDate) || !weeklyDays?.length || !weeklyDays.includes(weekdayForDate(startDate))) return "";
+  const sessions = selectedSessionsForMember({ ...player, weeklyDays });
+  const slots = attendanceSlots(sessions);
+  if (!slots.length) return "";
+  const allowance = priceSummary(weeklyDays.length).plan.sessions;
+  let attendedSessions = 0;
+  const cursor = new Date(`${startDate}T12:00:00`);
+  for (let dayOffset = 0; dayOffset < 730; dayOffset += 1) {
+    const isoDate = localDateString(cursor);
+    for (const slot of slots) {
+      const session = sessionForPlayerInSlot({ ...player, weeklyDays }, slot, isoDate);
+      if (!session || dayOffExists(slot.id, isoDate)) continue;
+      const startsAt = sessionStartTimestamp(session, isoDate);
+      const endsAt = sessionEndTimestamp(session, isoDate);
+      if ((endsAt ?? startsAt) === null) continue;
+      const recorded = data.attendance.find(record => {
+        if (record.playerId !== player.id || record.isoDate !== isoDate) return false;
+        const recordedSession = data.sessions.find(item => item.id === record.sessionId);
+        return recordedSession && attendanceSlotKey(recordedSession) === slot.id;
+      });
+      if (recorded?.status === "غائب") continue;
+      attendedSessions += 1;
+      if (attendedSessions >= allowance) return isoDate;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return "";
+}
+
 function sessionsForMember(user) {
   return data.sessions.filter(session => sessionIncludesMember(session, user));
 }
@@ -2711,7 +2741,7 @@ function legacyPlayerDetailsView(player) {
   const payments = data.payments.filter(payment => payment.playerId === player.id)
     .sort((left, right) => Number(right.confirmedAt || right.createdAt || 0) - Number(left.confirmedAt || left.createdAt || 0));
   const startDate = player.legacyAttendanceStartDate || player.subscriptionStart || player.actualStartDate || "";
-  const endDate = player.endDate || player.subscriptionEnd || (startDate ? addCalendarDays(startDate, 30) : "");
+  const endDate = legacyProjectedEndDate(player, startDate);
   const selectedDays = new Set(player.weeklyDays || []);
   const dayChoices = WEEK_DAYS.map(day =>
     `<label class="day-choice"><input type="checkbox" name="legacyWeeklyDays" value="${day}" ${selectedDays.has(day) ? "checked" : ""}><span>${day}</span></label>`
@@ -2743,7 +2773,7 @@ function legacyPlayerDetailsView(player) {
     </div>
     <p class="legacy-player-note">من تاريخ أول تمرين، تُحتسب الحصص المجدولة المنتهية كحضور تلقائيًا ما لم يسجل المشرف غياب اللاعب بتاريخ الحصة. لا تُخصم حصة الغياب من الرصيد، ويظهر كل تعديل لولي الأمر.</p>
     <form id="legacy-player-days-form" class="panel legacy-player-form"><h3>أيام الاشتراك</h3><input type="hidden" name="playerId" value="${escapeHtml(player.id)}"><fieldset class="registration-days"><legend>اختر أيام التدريب الأسبوعية</legend><div class="day-choice-grid">${dayChoices}</div></fieldset><button class="primary-button" type="submit">حفظ أيام التدريب</button></form>
-    <form id="legacy-player-balance-form" class="panel legacy-player-form"><h3>أول تمرين ومدة الاشتراك</h3><input type="hidden" name="playerId" value="${escapeHtml(player.id)}"><fieldset class="legacy-subscription-date"><legend>تاريخ أول تمرين</legend>${legacyDateFields("legacySubscriptionStart", startDate, false)}</fieldset><fieldset class="legacy-subscription-date"><legend>تاريخ انتهاء الاشتراك</legend>${legacyDateFields("legacySubscriptionEnd", endDate, false)}</fieldset><p class="form-note">الرصيد يُحسب تلقائيًا: ${arabicDigits(balance.allowance)} تمارين في الباقة − ${arabicDigits(balance.used)} حضور محسوب = ${arabicDigits(balance.remaining)} متبقي.</p><button class="primary-button" type="submit">حفظ البداية والتواريخ</button></form>
+    <form id="legacy-player-balance-form" class="panel legacy-player-form"><h3>أول تمرين ومدة الاشتراك</h3><input type="hidden" name="playerId" value="${escapeHtml(player.id)}"><fieldset class="legacy-subscription-date"><legend>تاريخ أول تمرين</legend>${legacyDateFields("legacySubscriptionStart", startDate, false)}</fieldset><label>تاريخ انتهاء الاشتراك — يُحسب تلقائيًا<input id="legacy-projected-end-date" type="date" value="${escapeHtml(endDate)}" readonly></label><p class="form-note">يُحسب تاريخ الانتهاء من أول تمرين وأيام التدريب وعدد تمارين الباقة. يتم تمديده عند تسجيل غياب، ولا يخصم الغياب من الرصيد.</p><p class="form-note">الرصيد يُحسب تلقائيًا: ${arabicDigits(balance.allowance)} تمارين في الباقة − ${arabicDigits(balance.used)} حضور محسوب = ${arabicDigits(balance.remaining)} متبقي.</p><button class="primary-button" type="submit">حفظ البداية والتواريخ</button></form>
     <form id="legacy-player-attendance-form" class="panel legacy-player-form"><h3>تسجيل حضور أو غياب بتاريخ محدد</h3><input type="hidden" name="playerId" value="${escapeHtml(player.id)}"><label>حصة التدريب<select name="sessionId" required><option value="">اختر الحصة</option>${sessionOptions}</select></label>${legacyDateFields("legacyAttendance")}<label>الحالة<select name="status" required><option value="حاضر">حاضر</option><option value="غائب">غائب — لا يخصم من الرصيد</option></select></label><button class="primary-button" type="submit">حفظ السجل</button></form>
     <form id="legacy-player-payment-form" class="panel legacy-player-form"><h3>إضافة دفعة سابقة</h3><input type="hidden" name="playerId" value="${escapeHtml(player.id)}"><div class="form-row"><label>تاريخ الدفع<input name="paymentDate" type="date" max="${localDateString()}" required></label><label>المبلغ بالجنيه<input name="paymentAmount" type="number" min="1" max="1000000" step="1" required></label></div><label>طريقة الدفع<select name="paymentMethod" required><option value="cash">كاش</option><option value="instapay">إنستا باي</option></select></label><button class="primary-button" type="submit">حفظ الدفعة السابقة</button></form>
     <section class="panel legacy-history-panel"><h3>سجل الحضور والغياب</h3><div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>الحصة</th><th>الحالة</th></tr></thead><tbody>${attendanceRows}</tbody></table></div></section>
@@ -2786,10 +2816,19 @@ async function persistLegacyPlayerChanges(previousData, successMessage) {
   }
 }
 
+function updateLegacyProjectedEndDate(form) {
+  const preview = form.querySelector("#legacy-projected-end-date");
+  const playerId = new FormData(form).get("playerId");
+  const player = data.users.find(item => item.id === playerId && item.role === "member");
+  if (!preview || !player) return;
+  const startDate = legacyDateFromForm(new FormData(form), "legacySubscriptionStart");
+  preview.value = startDate ? legacyProjectedEndDate(player, startDate) : "";
+}
+
 async function saveLegacyPlayerDays(form) {
   const player = data.users.find(item => item.id === form.get("playerId") && item.role === "member");
   if (currentUser?.role !== "coach" || !player) { showToast("اللاعب أو صلاحية المشرف غير متاحة."); return; }
-  const days = [...new Set(new FormData(form).getAll("legacyWeeklyDays").map(String))]
+  const days = [...new Set(form.getAll("legacyWeeklyDays").map(String))]
     .filter(day => WEEK_DAYS.includes(day) && data.workDays.includes(day));
   if (!days.length) { showToast("اختر يوم تدريب واحدًا على الأقل من أيام عمل الأكاديمية."); return; }
   const matchingSessions = data.sessions.filter(session =>
@@ -2805,6 +2844,16 @@ async function saveLegacyPlayerDays(form) {
     ...(player.selectedSessionIds || []).filter(id => matchingSessions.some(session => session.id === id)),
     ...matchingSessions.filter(session => sessionDays(session).some(day => days.includes(day))).map(session => session.id)
   ])];
+  const startDate = player.legacyAttendanceStartDate || player.subscriptionStart || player.actualStartDate;
+  if (player.legacyAttendanceAuto && startDate && days.includes(weekdayForDate(startDate))) {
+    const projectedEnd = legacyProjectedEndDate(player, startDate, days);
+    if (projectedEnd) {
+      const previousEnd = player.endDate || player.subscriptionEnd || "غير محدد";
+      player.endDate = projectedEnd;
+      player.subscriptionEnd = projectedEnd;
+      appendLegacyPlayerChange(player, "إعادة حساب تاريخ انتهاء الاشتراك", previousEnd, projectedEnd);
+    }
+  }
   const balance = playerTrainingBalance(player);
   player.sessionsUsed = balance.used;
   player.sessionsLeft = balance.remaining;
@@ -2814,15 +2863,13 @@ async function saveLegacyPlayerDays(form) {
 
 async function saveLegacyPlayerBalance(form) {
   const player = data.users.find(item => item.id === form.get("playerId") && item.role === "member");
-  const formData = new FormData(form);
-  const startDate = legacyDateFromForm(formData, "legacySubscriptionStart");
-  const endDate = legacyDateFromForm(formData, "legacySubscriptionEnd");
-  if (currentUser?.role !== "coach" || !player || !startDate || !endDate) {
-    showToast("أدخل تاريخ أول تمرين وتاريخ انتهاء صحيحين.");
+  const startDate = legacyDateFromForm(form, "legacySubscriptionStart");
+  if (currentUser?.role !== "coach" || !player || !startDate) {
+    showToast("أدخل تاريخ أول تمرين صحيحًا.");
     return;
   }
-  if (startDate > localDateString() || endDate < startDate) {
-    showToast("تاريخ أول تمرين لا يكون في المستقبل، وتاريخ الانتهاء يجب أن يكون بعده.");
+  if (startDate > localDateString()) {
+    showToast("تاريخ أول تمرين لا يكون في المستقبل.");
     return;
   }
   if (!player.weeklyDays.includes(weekdayForDate(startDate))) {
@@ -2831,6 +2878,11 @@ async function saveLegacyPlayerBalance(form) {
   }
   if (!player.weeklyDays?.length || !selectedSessionsForMember(player).length) {
     showToast("احفظ أيام التدريب والحصص المناسبة للاعب أولًا.");
+    return;
+  }
+  const endDate = legacyProjectedEndDate(player, startDate);
+  if (!endDate) {
+    showToast("تعذر حساب الانتهاء. تحقق من أيام التدريب والحصص المختارة.");
     return;
   }
   const previous = legacyPlayerSnapshot();
@@ -2931,6 +2983,13 @@ async function saveLegacyPlayerAttendance(form) {
   const updatedBalance = playerTrainingBalance(player);
   player.sessionsUsed = updatedBalance.used;
   player.sessionsLeft = updatedBalance.remaining;
+  const projectedEnd = legacyProjectedEndDate(player, player.legacyAttendanceStartDate);
+  if (projectedEnd) {
+    const previousEnd = player.endDate || player.subscriptionEnd || "غير محدد";
+    player.endDate = projectedEnd;
+    player.subscriptionEnd = projectedEnd;
+    appendLegacyPlayerChange(player, "إعادة حساب تاريخ انتهاء الاشتراك", previousEnd, projectedEnd);
+  }
   appendLegacyPlayerChange(
     player,
     "تحديث رصيد التمارين بعد سجل الحضور",
@@ -4574,6 +4633,9 @@ document.addEventListener("click", async event => {
 });
 
 document.addEventListener("change", event => {
+  if (event.target.name?.startsWith("legacySubscriptionStart") && currentUser?.role === "coach") {
+    updateLegacyProjectedEndDate(event.target.form);
+  }
   if (event.target.id === "training-count" && currentUser?.role === "coach") {
     const form = byId("action-form");
     const currentCount = form.querySelectorAll(".training-exercise").length;
@@ -4604,6 +4666,9 @@ document.addEventListener("change", event => {
 });
 
 document.addEventListener("input", event => {
+  if (event.target.name?.startsWith("legacySubscriptionStart") && currentUser?.role === "coach") {
+    updateLegacyProjectedEndDate(event.target.form);
+  }
   if (event.target.id === "guardian-report-search" && currentUser?.role === "coach") {
     guardianReportSearch = event.target.value;
     selectedReportGuardianId = "";
@@ -4657,7 +4722,7 @@ document.addEventListener("submit", event => {
   if (legacyHandler) {
     event.preventDefault();
     if (currentUser?.role !== "coach") { showToast("تعديل ملفات اللاعبين متاح للمشرف فقط."); return; }
-    Promise.resolve(legacyHandler(event.target)).catch(error => {
+    Promise.resolve(legacyHandler(new FormData(event.target))).catch(error => {
       console.error("تعذر حفظ بيانات اللاعب القائم.", error);
       showToast(error instanceof Error ? `تعذر الحفظ: ${error.message}` : "تعذر حفظ بيانات اللاعب.");
     });
