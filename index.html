@@ -77,7 +77,7 @@
             <label>اسم ولي الأمر<input name="guardianName" autocomplete="name" required placeholder="الاسم الكامل لولي الأمر"></label>
             <div class="form-row"><label>رقم هاتف ولي الأمر<input name="guardianPhone" type="tel" inputmode="tel" required placeholder="01xxxxxxxxx"></label><label>رقم واتساب ولي الأمر<input name="whatsappPhone" type="tel" inputmode="tel" required placeholder="01xxxxxxxxx"></label></div>
             <div class="form-row"><label>البريد الإلكتروني<input name="email" type="email" autocomplete="email" required placeholder="name@example.com"></label><label>كلمة المرور<span class="password-input"><input name="password" type="password" autocomplete="new-password" minlength="6" required placeholder="٦ أحرف على الأقل"><button type="button" class="show-password" aria-label="إظهار كلمة المرور">◉</button></span></label></div>
-            <fieldset class="registration-children"><legend>بيانات الأبناء</legend><div id="child-name-list" class="child-name-list"><div class="child-name-row"><label>اسم اللاعب<input name="childName" required minlength="2" maxlength="80" placeholder="اسم اللاعب بالكامل"></label><label>النوع<select name="childGender" required><option value="">اختر النوع</option><option value="male">ذكر</option><option value="female">أنثى</option></select></label></div></div><button type="button" class="add-child-button" id="add-child-name">＋ إضافة لاعب آخر</button></fieldset>
+            <fieldset class="registration-children"><legend>بيانات الأبناء</legend><div id="child-name-list" class="child-name-list"><div class="child-name-row"><label>اسم اللاعب<input name="childName" required minlength="2" maxlength="80" placeholder="اسم اللاعب بالكامل"></label><label>النوع<select name="childGender" required><option value="">اختر النوع</option><option value="male">ذكر</option><option value="female">أنثى</option></select></label><fieldset class="child-birth-date"><legend>تاريخ ميلاد اللاعب</legend><div class="child-birth-date-fields"><label>اليوم<input name="childBirthDay" type="text" inputmode="numeric" pattern="[0-9٠-٩۰-۹]{1,2}" maxlength="2" required placeholder="يوم"></label><label>الشهر<input name="childBirthMonth" type="text" inputmode="numeric" pattern="[0-9٠-٩۰-۹]{1,2}" maxlength="2" required placeholder="شهر"></label><label>السنة<input name="childBirthYear" type="text" inputmode="numeric" pattern="[0-9٠-٩۰-۹]{4}" maxlength="4" required placeholder="سنة"></label></div></fieldset></div></div><button type="button" class="add-child-button" id="add-child-name">＋ إضافة لاعب آخر</button></fieldset>
             <fieldset class="notification-consent">
               <legend>🔔 إشعارات الأكاديمية <span>الاختيار مطلوب</span></legend>
               <label><input type="radio" name="notificationConsent" value="accept" required> أوافق على استلام إشعارات الأكاديمية</label>
@@ -86,7 +86,7 @@
             <p class="form-note">سيُنشأ كود رقمي فريد لكل ابن ويُحفظ مع بياناته في قاعدة بيانات الأكاديمية.</p>
             <p class="form-note">استخدم البريد الإلكتروني وكلمة المرور للدخول إلى حسابك ومتابعة لاعبيك.</p>
             <button class="primary-button auth-submit" type="submit">إنشاء حساب ولي الأمر <span>←</span></button>
-            <p class="form-note">يمكنك استكمال تاريخ الميلاد وأيام التدريب لكل ابن بعد إنشاء الحساب.</p>
+            <p class="form-note">أدخل تاريخ ميلاد كل لاعب الآن، ويمكنك اختيار أيام التدريب بعد إنشاء الحساب.</p>
           </form>
           <button type="button" class="coach-entry" id="player-code-entry">دخول اللاعب بكود الحضور <span>← كود اللاعب</span></button>
           <button type="button" class="coach-entry" id="coach-entry">دخول المشرف <span>← فريق الأكاديمية</span></button>
@@ -113,12 +113,14 @@
       <p class="nav-label">مساحتي الرياضية</p>
       <nav class="portal-nav" aria-label="القائمة الرئيسية">
         <button class="portal-nav-item active" data-view="home"><span>◫</span>الرئيسية</button>
+        <button class="portal-nav-item supervisor-only" data-view="legacyPlayers" hidden><span>♙</span>ملفات اللاعبين الحاليين</button>
         <button class="portal-nav-item" data-view="schedule"><span>◷</span>جدول التدريبات</button>
         <button class="portal-nav-item member-only" data-view="subscription"><span>▤</span>اشتراكي</button>
         <button class="portal-nav-item member-only" data-view="payments"><span>⇄</span>المدفوعات</button>
         <button class="portal-nav-item supervisor-only" data-view="attendance" hidden><span>✓</span>حضور اللاعبين</button>
         <button class="portal-nav-item trainer-only" data-view="attendance" hidden><span>✓</span>تسجيل حضور لاعب</button>
         <button class="portal-nav-item supervisor-only" data-view="subscription" hidden><span>▤</span>اشتراكات اللاعبين</button>
+        <button class="portal-nav-item supervisor-only" data-view="guardianReport" hidden><span>▣</span>تقرير ولي الأمر الشامل</button>
         <button class="portal-nav-item supervisor-only" data-view="payments" hidden><span>⇄</span>تأكيد التحويلات</button>
         <button class="portal-nav-item supervisor-only" data-view="settings" hidden><span>⚙</span>أيام العمل والأسعار</button>
         <button class="portal-nav-item supervisor-only" data-view="trainers" hidden><span>♙</span>إدارة المدربين</button>

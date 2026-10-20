@@ -2,6 +2,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/12.4.0/firebas
 import { getAnalytics, isSupported as isAnalyticsSupported } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-analytics.js";
 import {
   createUserWithEmailAndPassword,
+  connectAuthEmulator,
   deleteUser,
   getAuth,
   onAuthStateChanged,
@@ -13,6 +14,7 @@ import {
 import {
   addDoc,
   collection,
+  connectFirestoreEmulator,
   deleteDoc,
   doc,
   getDoc,
@@ -27,6 +29,7 @@ import {
   where,
   writeBatch
 } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-firestore.js";
+import { connectFunctionsEmulator, getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-functions.js";
 import {
   deleteToken,
   getMessaging,
@@ -45,9 +48,19 @@ const firebaseConfig = {
 const COACH_EMAIL = "al.itthad.academy@gmail.com";
 const FIREBASE_WEB_PUSH_VAPID_KEY = "BG_n4zEwQIE8kkSM-H-bUp5smvv9SIdo9tzZ8NFbxAoYJRHBRBjFLqMfN4GJ_M1Bly9x2X1alwPM96mynMc6620";
 
-const app = initializeApp(firebaseConfig);
+const useFirebaseEmulators = ["localhost", "127.0.0.1"].includes(window.location.hostname)
+  && new URLSearchParams(window.location.search).get("emulator") === "1";
+const app = initializeApp(useFirebaseEmulators
+  ? { ...firebaseConfig, projectId: "demo-alittihad-academy" }
+  : firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const functions = getFunctions(app);
+if (useFirebaseEmulators) {
+  connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
+  connectFirestoreEmulator(db, "127.0.0.1", 8080);
+  connectFunctionsEmulator(functions, "127.0.0.1", 5001);
+}
 let foregroundMessageUnsubscribe = null;
 
 async function notificationTokenDocumentId(ownerUid, token) {
@@ -101,13 +114,24 @@ async function migratePaymentReferenceClaims(payments, profile) {
 }
 
 async function messagingClient() {
+  if (useFirebaseEmulators) {
+    throw new Error("إشعارات Firebase معطلة في وضع المحاكيات لتجنب الاتصال بخدمات الإنتاج.");
+  }
   if (!FIREBASE_WEB_PUSH_VAPID_KEY) {
     throw new Error("إشعارات الهاتف غير مهيأة بعد. أضف مفتاح Web Push من Firebase Console إلى FIREBASE_WEB_PUSH_VAPID_KEY في firebase.js.");
   }
   if (!("Notification" in window) || !("serviceWorker" in navigator) || !(await isMessagingSupported())) {
     throw new Error("هذا المتصفح أو الجهاز لا يدعم إشعارات Firebase. افتح الموقع عبر HTTPS على متصفح حديث.");
   }
-  const registration = await navigator.serviceWorker.register("./firebase-messaging-sw.js");
+  const legacyWorkerUrl = new URL("./firebase-messaging-sw.js", document.baseURI).href;
+  const registrations = await navigator.serviceWorker.getRegistrations();
+  const legacyRegistrations = registrations.filter(registration =>
+    [registration.installing, registration.waiting, registration.active]
+      .some(worker => worker?.scriptURL === legacyWorkerUrl)
+  );
+  await Promise.all(legacyRegistrations.map(registration => registration.unregister()));
+  const workerUrl = new URL("./public/firebase-messaging-sw.js", document.baseURI);
+  const registration = await navigator.serviceWorker.register(workerUrl);
   const messaging = getMessaging(app);
   return { messaging, registration };
 }
@@ -145,8 +169,8 @@ async function subscribeUserToNotifications(profile) {
       if (Notification.permission === "granted") {
         registration.showNotification(title, {
           body,
-          icon: "./app-icon.png?v=2",
-          badge: "./app-icon.png?v=2",
+          icon: "./app-icon.svg?v=2",
+          badge: "./app-icon.svg?v=2",
           tag: payload.data?.eventId || undefined,
           data: { url: payload.data?.url || "/" }
         });
@@ -295,6 +319,7 @@ function collectionsForRole(profile) {
   names.push("attendance");
   if (profile.role !== "trainer") names.push("payments", "attendanceExceptions");
   if (profile.role === "coach") names.push("trainerAttendance");
+  if (profile.role === "coach") names.push("administrativeAbsences");
   if (profile.role === "coach") names.push("expenses", "revenues");
   names.push("settings");
   return names;
@@ -320,6 +345,7 @@ function applyRecords(state, name, records, profile) {
     attendance: ["coach", "guardian", "member", "trainer"],
     attendanceExceptions: ["coach", "guardian", "member"],
     trainerAttendance: ["coach", "trainer"],
+    administrativeAbsences: ["coach"],
     expenses: ["coach"],
     revenues: ["coach"],
     announcements: ["coach", "trainer", "guardian", "member"]
@@ -539,6 +565,40 @@ function academyServices() {
       stopWatching();
       await signOut(auth);
     },
+    async getGuardianReport(guardianId) {
+      const user = auth.currentUser;
+      if (!user || user.isAnonymous) throw new Error("سجّل الدخول بحساب المشرف لعرض تقرير ولي الأمر.");
+      const supervisor = await getProfile(user);
+      if (supervisor?.role !== "coach") throw new Error("تقرير ولي الأمر متاح للمشرف فقط.");
+      if (typeof guardianId !== "string" || !guardianId) throw new Error("معرّف ولي الأمر غير صالح.");
+
+      const guardianSnapshot = await getDoc(doc(db, "users", guardianId));
+      if (!guardianSnapshot.exists() || guardianSnapshot.data().role !== "guardian") {
+        throw new Error("لم يتم العثور على حساب ولي الأمر.");
+      }
+      const playerSnapshot = await getDocs(query(collection(db, "players"), where("guardianId", "==", guardianId)));
+      const players = documentsFromSnapshot(playerSnapshot, false);
+      const playerIds = players.map(player => player.id).filter(Boolean);
+      const readPlayerRecords = async name => {
+        const groups = [];
+        for (let offset = 0; offset < playerIds.length; offset += 30) {
+          const playerIdGroup = playerIds.slice(offset, offset + 30);
+          const snapshot = await getDocs(query(collection(db, name), where("playerId", "in", playerIdGroup)));
+          groups.push(...documentsFromSnapshot(snapshot, false));
+        }
+        return groups;
+      };
+      const [attendance, payments] = await Promise.all([
+        readPlayerRecords("attendance"),
+        readPlayerRecords("payments")
+      ]);
+      return {
+        guardian: { ...guardianSnapshot.data(), id: guardianSnapshot.id },
+        players,
+        attendance,
+        payments
+      };
+    },
     async loadAcademyData(profile, state, onUpdate, onError) {
       if (profile.role === "member") {
         const playerSnapshot = await getDoc(doc(db, "players", profile.playerCode));
@@ -738,6 +798,48 @@ function academyServices() {
       if (!saved.exists()) throw new Error("تم إنشاء الإعلان ولكن تعذر تحميل النسخة المحفوظة.");
       return { ...saved.data(), id: saved.id };
     },
+    async createAdministrativeAbsence(absence) {
+      if (!activeProfile || activeProfile.role !== "coach"
+        || activeProfile.id !== auth.currentUser?.uid
+        || absence.createdBy !== activeProfile.id) {
+        throw new Error("تسجيل الغياب الإداري متاح للمشرف المسجل فقط.");
+      }
+      if (typeof absence.playerId !== "string" || !absence.playerId
+        || typeof absence.playerCode !== "string" || !/^\d{6}$/.test(absence.playerCode)
+        || typeof absence.isoDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(absence.isoDate)) {
+        throw new Error("بيانات اللاعب أو تاريخ الغياب غير صالحة.");
+      }
+      const absenceId = `${absence.playerId}_${absence.isoDate}`;
+      const reference = doc(db, "administrativeAbsences", absenceId);
+      await runTransaction(db, async transaction => {
+        const [existing, playerSnapshot] = await Promise.all([
+          transaction.get(reference),
+          transaction.get(doc(db, "players", absence.playerCode))
+        ]);
+        if (existing.exists()) throw new Error("تم تسجيل غياب هذا اللاعب في التاريخ نفسه من قبل.");
+        if (!playerSnapshot.exists() || playerSnapshot.data().id !== absence.playerId) {
+          throw new Error("بيانات اللاعب غير متطابقة. حدّث الصفحة وحاول مرة أخرى.");
+        }
+        transaction.set(reference, {
+          id: absenceId,
+          playerId: absence.playerId,
+          playerCode: absence.playerCode,
+          playerName: absence.playerName,
+          isoDate: absence.isoDate,
+          dateLabel: absence.dateLabel,
+          createdBy: activeProfile.id,
+          createdByName: activeProfile.name,
+          createdAt: serverTimestamp()
+        });
+      });
+      return {
+        ...absence,
+        id: absenceId,
+        createdBy: activeProfile.id,
+        createdByName: activeProfile.name,
+        createdAt: Date.now()
+      };
+    },
     subscribeUserToNotifications,
     unsubscribeUserFromNotifications,
     migratePaymentReferenceClaims,
@@ -805,6 +907,22 @@ function academyServices() {
       }
       paymentBaselines.forEach(([key, value]) => baseline.set(key, value));
     },
+    async quotePlayerPayment(planId) {
+      if (activeProfile?.role !== "member" || activeProfile.authUid !== auth.currentUser?.uid) {
+        throw new Error("طلب تسعير اشتراك اللاعب متاح من جلسة اللاعب الحالية فقط.");
+      }
+      const quotePlayerPayment = httpsCallable(functions, "quotePlayerPayment");
+      const result = await quotePlayerPayment({ planId });
+      return result.data;
+    },
+    async createPlayerPaymentRequest(request) {
+      if (activeProfile?.role !== "member" || activeProfile.authUid !== auth.currentUser?.uid) {
+        throw new Error("إرسال طلب الدفع متاح من جلسة اللاعب الحالية فقط.");
+      }
+      const createPlayerPaymentRequest = httpsCallable(functions, "createPlayerPaymentRequest");
+      const result = await createPlayerPaymentRequest(request);
+      return result.data.payment;
+    },
     async deleteGuardian(guardian, players) {
       await runTransaction(db, async transaction => {
         const profileRef = doc(db, "users", guardian.id);
@@ -821,6 +939,8 @@ function academyServices() {
 }
 
 window.firebaseServices = academyServices();
-isAnalyticsSupported().then(supported => {
-  if (supported) getAnalytics(app);
-}).catch(error => console.warn("تعذر تهيئة Firebase Analytics.", error));
+if (!useFirebaseEmulators) {
+  isAnalyticsSupported().then(supported => {
+    if (supported) getAnalytics(app);
+  }).catch(error => console.warn("تعذر تهيئة Firebase Analytics.", error));
+}
