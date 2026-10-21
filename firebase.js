@@ -117,6 +117,10 @@ async function messagingClient() {
   if (useFirebaseEmulators) {
     throw new Error("إشعارات Firebase معطلة في وضع المحاكيات لتجنب الاتصال بخدمات الإنتاج.");
   }
+  const localHost = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+  if (window.location.protocol !== "https:" && !(window.location.protocol === "http:" && localHost)) {
+    throw new Error("إشعارات Firebase تحتاج فتح الأكاديمية من رابط HTTPS، وليس من ملف على الجهاز.");
+  }
   if (!FIREBASE_WEB_PUSH_VAPID_KEY) {
     throw new Error("إشعارات الهاتف غير مهيأة بعد. أضف مفتاح Web Push من Firebase Console إلى FIREBASE_WEB_PUSH_VAPID_KEY في firebase.js.");
   }

@@ -99,7 +99,7 @@ firebase.cmd emulators:start --project demo-alittihad-academy --only auth,firest
 
 1. من Firebase Console افتح **Project settings → Cloud Messaging → Web Push certificates** وأنشئ/انسخ **Web Push key pair (VAPID) public key**.
 2. ضع المفتاح العام في الثابت `FIREBASE_WEB_PUSH_VAPID_KEY` أعلى `firebase.js`. المفتاح عام ومخصص لتهيئة المتصفح، وليس مفتاحًا سريًا للخادم.
-3. انشر الموقع من نطاق HTTPS. لا تعمل إشعارات الويب عند فتح `index.html` كملف محلي `file://`.
+3. انشر الموقع من نطاق HTTPS. لا تعمل إشعارات الويب عند فتح `index.html` كملف محلي `file://`. إذا سبق رفض الإذن، غيّر إشعارات الموقع إلى **سماح** من إعدادات الموقع في المتصفح ثم أعد تحميله؛ لا يستطيع الموقع تجاوز إذن مرفوض.
 4. تأكد أن إعداد الاستضافة يقدّم الملف `public/firebase-messaging-sw.js` على المسار `/public/firebase-messaging-sw.js` من النطاق نفسه الذي يقدّم `index.html` و`app-icon.svg`. يسجّل `firebase.js` عامل الخدمة من هذا المسار ويمرر تسجيله صراحةً إلى Firebase Messaging.
 5. إعداد Firebase Hosting في `firebase.json` يقدّم جذر المشروع ويستثني ملفات التطوير والوظائف والقواعد من الموقع. بعد معاينة الموقع محليًا، انشر الواجهة عند الحاجة بالأمر:
 

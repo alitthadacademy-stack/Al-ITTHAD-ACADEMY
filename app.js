@@ -35,6 +35,7 @@ let startupReady = false;
 let connectionCheckInProgress = false;
 let connectionRetryTimer = null;
 let firebaseObserverStarted = false;
+let attendanceClockInterval = null;
 
 function notificationConsentStorageKey(userId) {
   return `${STORAGE_KEY}.push.${userId}`;
@@ -44,8 +45,13 @@ function notificationSubscriptionStorageKey(userId) {
   return `${STORAGE_KEY}.push.subscription.${userId}`;
 }
 
+function supportsPushNotificationsOnThisOrigin() {
+  return window.location.protocol === "https:"
+    || (window.location.protocol === "http:" && ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname));
+}
+
 async function requestNotificationPermission(consent) {
-  if (consent !== "accept" || !("Notification" in window)) return null;
+  if (consent !== "accept" || !("Notification" in window) || !supportsPushNotificationsOnThisOrigin()) return null;
   let permission = Notification.permission;
   if (permission === "default" && window.isSecureContext) {
     permission = await Notification.requestPermission();
@@ -716,7 +722,8 @@ function signIn(user) {
   document.querySelectorAll(".trainer-only").forEach(item => { item.hidden = user.role !== "trainer"; });
   activeView = "home";
   renderView();
-  if (hasAcceptedNotifications(user) && "Notification" in window && Notification.permission === "granted") {
+  if (supportsPushNotificationsOnThisOrigin() && hasAcceptedNotifications(user)
+    && "Notification" in window && Notification.permission === "granted") {
     window.firebaseReady
       .then(async firebase => {
         await firebase.subscribeUserToNotifications(user);
@@ -1238,11 +1245,14 @@ function memberHomeView() {
     ? `<section class="panel supervisor-update-panel"><div class="panel-heading"><div><h2>تحديثات المشرف على ملف اللاعب</h2><p>تظهر هنا التعديلات التي تمت على الاشتراك والحضور والمدفوعات.</p></div></div><div class="supervisor-update-list">${recentChanges.map(change =>     `<article><time>${escapeHtml(legacyChangeTimestamp(change.changedAt))}</time><strong>${escapeHtml(change.title)}</strong><span>${escapeHtml(change.before)} ← ${escapeHtml(change.after)}</span><small>بواسطة ${escapeHtml(change.changedBy || "مشرف الأكاديمية")}</small></article>`).join("")}</div></section>`
     : "";
   const actionMessage = encodeURIComponent(`مرحبًا، أود الاستفسار عن متابعة اللاعب ${user.name}.`);
+  const playerCodeContact = ["guardian", "member"].includes(currentUser.role) && user.playerCode
+    ? `<div class="guardian-player-code"><span>كود اللاعب: <strong>${escapeHtml(user.playerCode)}</strong></span><button type="button" class="copy-code" data-action="copy-text" data-copy="${escapeHtml(user.playerCode)}" aria-label="نسخ كود اللاعب">⧉ نسخ</button><a class="text-link whatsapp-link" href="https://wa.me/${whatsappPhone(DEFAULT_INSTAPAY_NUMBER)}?text=${encodeURIComponent(`اسم اللاعب / ${user.name}\nكود اللاعب / ${user.playerCode}`)}" target="_blank" rel="noopener noreferrer">إرسال الكود للمشرف عبر واتساب</a></div>`
+    : "";
   const pendingCategory = pendingPlayerCategory(user);
   const categoryNotice = pendingCategory
     ? `<div class="inline-notice">بلغ اللاعب السن المؤهل للانتقال إلى فئة ${escapeHtml(pendingCategory)}. تظل فئته الحالية حتى اعتماد المشرف.</div>`
     : "";
-  return `<section class="portal-welcome"><div><p class="eyebrow"><span class="live-dot"></span>${egyptianDate.format(new Date())}</p><h1>أهلًا بك يا ${escapeHtml(parentName)} <span class="wave">✦</span></h1><p class="welcome-subtitle">متابعة اللاعب: <strong>${escapeHtml(user.name)}</strong></p></div><div class="welcome-actions"><div class="welcome-notification-slot"></div><span class="welcome-ball">🏀</span></div></section>${notificationPanel}${categoryNotice}
+  return `<section class="portal-welcome"><div><p class="eyebrow"><span class="live-dot"></span>${egyptianDate.format(new Date())}</p><h1>أهلًا بك يا ${escapeHtml(parentName)} <span class="wave">✦</span></h1><p class="welcome-subtitle">متابعة اللاعب: <strong>${escapeHtml(user.name)}</strong></p>${playerCodeContact}</div><div class="welcome-actions"><div class="welcome-notification-slot"></div><span class="welcome-ball">🏀</span></div></section>${notificationPanel}${categoryNotice}
     <section class="member-stats">
       <article class="member-stat"><span class="member-stat-icon green-icon">◷</span><p>الموعد القادم</p><strong>${nextSession ? `${escapeHtml(weekdayForDate(localDateString(nextSession.date)))} · ${escapeHtml(egyptianDate.format(nextSession.date))}` : "لا يوجد تدريب"}</strong><small>${escapeHtml(nextSession ? `${sessionTimeRange(nextSession.session)} · ${nextSession.session.title}` : "تظهر المواعيد بعد إضافتها من الأكاديمية")}</small></article>
       <article class="member-stat"><span class="member-stat-icon blue-icon">✓</span><p>التمارين المتبقية</p><strong>${arabicDigits(Math.max(0, sessionsLeft))} تمرين</strong><small>${user.legacyAttendanceAuto ? "حضور محسوب" : "حضر"} ${arabicDigits(attendanceCount)} من ${arabicDigits(balance.allowance)} تمارين</small></article>
@@ -1256,19 +1266,28 @@ function memberHomeView() {
 function notificationPanelForCurrentUser() {
   if (!currentUser || !["guardian", "member", "coach", "trainer"].includes(currentUser.role)
     || hasNotificationSubscription(currentUser)) return "";
-  const description = ["guardian", "member"].includes(currentUser.role)
+  const accountDescription = ["guardian", "member"].includes(currentUser.role)
     ? "استقبل تنبيهات الحضور والغياب والدفع الخاصة بحسابك، والإعلانات الجديدة."
     : "استقبل الإعلانات والتنبيهات العامة الجديدة من الأكاديمية.";
+  const description = !supportsPushNotificationsOnThisOrigin()
+    ? "الإشعارات تحتاج فتح الأكاديمية من رابط HTTPS؛ لا تعمل عند فتح ملف الموقع مباشرة."
+    : "Notification" in window && Notification.permission === "denied"
+      ? "إذن الإشعارات مرفوض من المتصفح. غيّره إلى السماح من إعدادات الموقع ثم أعد تحميل الصفحة."
+      : accountDescription;
   return `<section class="panel push-notification-panel"><div><strong>إشعارات الأكاديمية</strong><p>${description}</p></div><button class="small-action" data-action="toggle-guardian-notifications">🔔 ${hasAcceptedNotifications(currentUser) ? "إعادة محاولة تفعيل الإشعارات" : "تفعيل الإشعارات"}</button></section>`;
 }
 
 async function toggleUserNotifications() {
   if (!["guardian", "member", "coach", "trainer"].includes(currentUser?.role)) { showToast("إشعارات الهاتف متاحة للحسابات المسجلة في الأكاديمية فقط."); return; }
   try {
-    if (!window.isSecureContext || !("serviceWorker" in navigator)) {
+    if (!supportsPushNotificationsOnThisOrigin()) {
       throw new Error("إشعارات الهاتف تحتاج فتح الأكاديمية من رابط HTTPS، وليس من ملف على الجهاز.");
     }
+    if (!("serviceWorker" in navigator)) throw new Error("هذا المتصفح لا يدعم تشغيل خدمة إشعارات الأكاديمية.");
     if (!("Notification" in window)) throw new Error("هذا المتصفح لا يدعم إشعارات الهاتف.");
+    if (Notification.permission === "denied") {
+      throw new Error("إذن الإشعارات مرفوض. افتح إعدادات الموقع في المتصفح، وغيّر الإشعارات إلى سماح، ثم أعد تحميل الصفحة.");
+    }
     const permission = Notification.permission === "default"
       ? await Notification.requestPermission()
       : Notification.permission;
@@ -2069,7 +2088,8 @@ function coachAttendanceView() {
     const categories = [...new Set(slot.sessions.flatMap(sessionCategories))].join("، ");
     const players = new Set(data.users.filter(user => user.role === "member" && slot.sessions.some(item => sessionIncludesMember(item, user))).map(user => user.id));
     const exercises = slot.sessions.map(item => `${escapeHtml(item.title)} (${escapeHtml(sessionCategoryLabel(item))})`).join("، ");
-    return `<article class="schedule-card"><div class="schedule-day"><strong>${escapeHtml(days.join("، "))}</strong><span>${escapeHtml(sessionTimeRange(session))}</span></div><span class="schedule-mark">🏀</span><div class="schedule-info"><strong>${escapeHtml(categories)}</strong><span>${exercises} · ${arabicDigits(players.size)} لاعب مسجل</span></div><div class="schedule-actions"><button class="small-action" data-action="take-attendance" data-session="${escapeHtml(session.id)}">كشف الساعة</button><button class="small-action" data-action="day-off" data-session="${escapeHtml(session.id)}">إعلان إجازة</button></div></article>`;
+    const holiday = dayOffExists(slot.id, localDateString());
+    return `<article class="schedule-card"><div class="schedule-day"><strong>${escapeHtml(days.join("، "))}</strong><span>${escapeHtml(sessionTimeRange(session))}</span></div><span class="schedule-mark">🏀</span><div class="schedule-info"><strong>${escapeHtml(categories)}</strong><span>${exercises} · ${arabicDigits(players.size)} لاعب مسجل${holiday ? " · إجازة معلنة اليوم" : ""}</span></div><div class="schedule-actions"><button class="small-action" data-action="take-attendance" data-session="${escapeHtml(session.id)}" ${holiday ? "disabled" : ""}>${holiday ? "إجازة اليوم" : "كشف الساعة"}</button><button class="small-action" data-action="day-off" data-session="${escapeHtml(session.id)}" ${holiday ? "disabled" : ""}>إعلان إجازة</button></div></article>`;
   }).join("") : '<div class="empty-state"><p>أضف حصة إلى الجدول لفتح كشف الحضور.</p></div>';
   const makeupRows = pendingMakeups.map(request => {
     const user = data.users.find(item => item.id === request.playerId && item.role === "member");
@@ -2240,7 +2260,10 @@ function saveTrainerAttendanceForPlayer(form) {
 function openCodeAttendanceForm() {
   if (currentUser?.role !== "coach") { showToast("تسجيل الحضور بالكود من صلاحية المشرف فقط."); return; }
   const now = new Date();
-  const availableSessions = data.sessions.filter(session => !attendanceWindowError(session, localDateString(now), now));
+  const availableSessions = data.sessions.filter(session =>
+    !attendanceWindowError(session, localDateString(now), now)
+    && !dayOffExists(attendanceSlotForSession(session)?.id, localDateString(now))
+  );
   const slots = attendanceSlots(availableSessions);
   if (!slots.length) { showToast("لا توجد حصة متاحة للحضور في الساعة الحالية. تحقق من وقت الحصص وأيامها في الجدول."); return; }
   const selectedSlotId = slots.length === 1 ? slots[0].id : "";
@@ -2249,12 +2272,21 @@ function openCodeAttendanceForm() {
     return `<option value="${escapeHtml(slot.id)}" ${slot.id === selectedSlotId ? "selected" : ""}>${escapeHtml(sessionTimeRange(session))}</option>`;
   }).join("");
   const currentTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-  openModal("تسجيل حضور أو غياب بكود اللاعب", `<p class="attendance-current-time">الساعة الحالية: <strong id="attendance-current-time">${currentTime}</strong> <button type="button" class="small-action" id="refresh-attendance-time">تحديث الساعة الحالية</button></p><label>ساعة التدريب<select name="slotId" required>${slots.length > 1 ? '<option value="">اختر الساعة</option>' : ""}${options}</select></label><label>كود اللاعب<input name="playerCode" inputmode="numeric" pattern="[0-9٠-٩۰-۹]{6}" minlength="6" maxlength="6" required placeholder="الكود الرقمي المكوّن من ٦ أرقام"></label><label>حالة اللاعب<select name="attendanceStatus" required><option value="حاضر" selected>حاضر</option><option value="غائب">غائب — لا يُخصم تمرين ويمكن طلب تعويض</option></select></label><p class="modal-explainer">تظهر ساعات التدريب المفتوح تسجيل الحضور أو الغياب فيها الآن فقط. عند تسجيل الغياب بالكود يُحفظ في سجل الحضور دون خصم تمرين، ويمكن لولي الأمر أو اللاعب طلب تعويضه في يوم تدريب آخر قبل انتهاء الاشتراك.</p>`, "تسجيل الحالة بالكود", form => saveCodeAttendance(form), "الحضور والغياب");
-  const form = byId("action-form");
-  form.querySelector("#refresh-attendance-time").addEventListener("click", openCodeAttendanceForm);
+  openModal("تسجيل حضور أو غياب بكود اللاعب", `<p class="attendance-current-time" aria-live="polite">الساعة الحالية: <strong id="attendance-current-time">${currentTime}</strong></p><label>ساعة التدريب<select name="slotId" required>${slots.length > 1 ? '<option value="">اختر الساعة</option>' : ""}${options}</select></label><label>كود اللاعب<input name="playerCode" inputmode="numeric" pattern="[0-9٠-٩۰-۹]{6}" minlength="6" maxlength="6" required placeholder="الكود الرقمي المكوّن من ٦ أرقام"></label><label>حالة اللاعب<select name="attendanceStatus" required><option value="حاضر" selected>حاضر</option><option value="غائب">غائب — لا يُخصم تمرين ويمكن طلب تعويض</option></select></label><p class="modal-explainer">تظهر ساعات التدريب المفتوح تسجيل الحضور أو الغياب فيها الآن فقط. عند تسجيل الغياب بالكود يُحفظ في سجل الحضور دون خصم تمرين، ويمكن لولي الأمر أو اللاعب طلب تعويضه في يوم تدريب آخر قبل انتهاء الاشتراك.</p>`, "تسجيل الحالة بالكود", form => saveCodeAttendance(form), "الحضور والغياب");
+  if (attendanceClockInterval !== null) clearInterval(attendanceClockInterval);
+  attendanceClockInterval = setInterval(() => {
+    const clock = byId("attendance-current-time");
+    if (!clock || byId("action-modal").getAttribute("aria-hidden") === "true") {
+      clearInterval(attendanceClockInterval);
+      attendanceClockInterval = null;
+      return;
+    }
+    const current = new Date();
+    clock.textContent = `${String(current.getHours()).padStart(2, "0")}:${String(current.getMinutes()).padStart(2, "0")}`;
+  }, 1000);
 }
 
-function saveCodeAttendance(form) {
+async function saveCodeAttendance(form) {
   if (currentUser?.role !== "coach") { showToast("تسجيل الحضور بالكود من صلاحية المشرف فقط."); return; }
   const code = normalizeDigits(String(form.get("playerCode")).trim());
   const player = data.users.find(user => user.role === "member" && user.playerCode === code);
@@ -2264,6 +2296,10 @@ function saveCodeAttendance(form) {
   if (!player) { showToast("كود اللاعب غير موجود. راجع الرقم وحاول مرة أخرى."); return; }
   if (!["حاضر", "غائب"].includes(status)) { showToast("اختر حالة حضور أو غياب صحيحة."); return; }
   if (!slot) { showToast("ساعة التدريب المختارة غير متاحة لتسجيل الحضور في الوقت الحالي."); return; }
+  if (dayOffExists(slot.id, localDateString())) {
+    showToast("تم إعلان إجازة لهذه المجموعة اليوم؛ لا يمكن تسجيل حضور أو غياب.");
+    return;
+  }
   const session = sessionForPlayerInSlot(player, slot);
   if (!session) { showToast("اللاعب لا ينتمي إلى أي فئة من فئات التمارين المتاحة في هذه الساعة."); return; }
   if (data.attendance.some(record => record.playerId === player.id && slot.sessions.some(item => item.id === record.sessionId) && record.isoDate === localDateString())) {
@@ -2271,13 +2307,39 @@ function saveCodeAttendance(form) {
     return;
   }
   if (status === "غائب") {
-    registerPlayerAbsenceByCode(player, session);
+    await registerPlayerAbsenceByCode(player, session);
     return;
   }
-  registerPlayerAttendance(player, session, new Date(), true);
+  await registerPlayerAttendance(player, session, new Date(), true);
 }
 
-function registerPlayerAbsenceByCode(player, session) {
+async function persistCodeAttendance(player, rollback) {
+  if (!saveLocalData()) {
+    rollback();
+    return false;
+  }
+  if (cloudProfile) {
+    try {
+      await cloudWriteQueue;
+      const firebase = await window.firebaseReady;
+      await firebase.saveAcademyData(JSON.parse(JSON.stringify(data)), cloudProfile);
+    } catch (error) {
+      rollback();
+      saveLocalData();
+      console.error("تعذر حفظ تسجيل الحضور بالكود في Firestore.", error);
+      showToast(error instanceof Error ? `تعذر تسجيل الحالة سحابيًا: ${error.message}` : "تعذر تسجيل الحالة سحابيًا. سيظل الكود في الحقل.");
+      return false;
+    }
+  }
+  const codeInput = byId("action-form").querySelector('input[name="playerCode"]');
+  if (codeInput) {
+    codeInput.value = "";
+    codeInput.focus();
+  }
+  return true;
+}
+
+async function registerPlayerAbsenceByCode(player, session) {
   const now = new Date();
   const isoDate = localDateString(now);
   const windowError = attendanceWindowError(session, isoDate, now);
@@ -2323,19 +2385,21 @@ function registerPlayerAbsenceByCode(player, session) {
   if (!Array.isArray(player.attendanceLogs)) player.attendanceLogs = [];
   player.attendanceLogs.push(record.id);
   data.attendance.push(record);
-  if (saveData()) {
-    const codeInput = byId("action-form").querySelector('input[name="playerCode"]');
-    codeInput.value = "";
-    codeInput.focus();
-    showToast(`تم تسجيل غياب ${player.name} دون خصم تمرين. يمكنه طلب التعويض من سجل الحضور.`);
-  } else {
-    data.attendance.pop();
+  const saved = await persistCodeAttendance(player, () => {
+    data.attendance = data.attendance.filter(item => item.id !== record.id);
     player.attendanceLogs = previousAttendanceLogs;
+  });
+  if (saved) {
+    showToast(`تم تسجيل غياب ${player.name} دون خصم تمرين. يمكنه طلب التعويض من سجل الحضور.`);
   }
 }
 
-function registerPlayerAttendance(player, session, dateTime = new Date(), keepCodeEntryOpen = false) {
+async function registerPlayerAttendance(player, session, dateTime = new Date(), keepCodeEntryOpen = false) {
   const isoDate = localDateString(dateTime);
+  if (dayOffExists(attendanceSlotForSession(session)?.id, isoDate)) {
+    showToast("تم إعلان إجازة لهذه المجموعة في التاريخ المحدد؛ لا يمكن تسجيل الحضور.");
+    return;
+  }
   const windowError = attendanceWindowError(session, isoDate);
   if (windowError) { showToast(windowError); return; }
   if (!attendanceTimeIsWithinSession(session, isoDate, dateTime.getTime())) {
@@ -2374,15 +2438,23 @@ function registerPlayerAttendance(player, session, dateTime = new Date(), keepCo
   if (!Array.isArray(player.attendanceLogs)) player.attendanceLogs = [];
   player.attendanceLogs.push(record.id);
   data.attendance.push(record);
-  if (saveData()) {
-    if (keepCodeEntryOpen) {
-      const codeInput = byId("action-form").querySelector('input[name="playerCode"]');
-      codeInput.value = "";
-      codeInput.focus();
-    } else {
-      closeModal();
-      renderView();
+  if (keepCodeEntryOpen) {
+    const saved = await persistCodeAttendance(player, () => {
+      data.attendance = data.attendance.filter(item => item.id !== record.id);
+      player.sessionsUsed = previousUsed;
+      player.sessionsLeft = previousLeft;
+      Object.assign(player, previousSubscription);
+    });
+    if (saved) {
+      showToast(record.unpaidException
+        ? `تم تسجيل استثناء حضور ${player.name} دون دفع. سيُخصم التمرين من الاشتراك عند تجديده بعد سداد كامل المبلغ.`
+        : `تم تسجيل ${status} للاعب ${player.name}.`);
     }
+    return;
+  }
+  if (saveData()) {
+    closeModal();
+    renderView();
     showToast(record.unpaidException
       ? `تم تسجيل استثناء حضور ${player.name} دون دفع. سيُخصم التمرين من الاشتراك عند تجديده بعد سداد كامل المبلغ.`
       : `تم تسجيل ${status} للاعب ${player.name}.`);
@@ -2398,6 +2470,10 @@ function openAttendanceRoster(sessionId) {
   if (currentUser?.role !== "coach") { showToast("تسجيل حضور اللاعبين من صلاحية المشرف فقط."); return; }
   const selectedSession = data.sessions.find(item => item.id === sessionId);
   const slot = selectedSession && attendanceSlotForSession(selectedSession);
+  if (slot && dayOffExists(slot.id, localDateString())) {
+    showToast("تم إعلان إجازة لهذه المجموعة اليوم؛ لا يمكن فتح كشف الحضور.");
+    return;
+  }
   const session = slot?.sessions.find(item => !attendanceWindowError(item, localDateString())) || slot?.sessions[0];
   if (!session) { showToast("لم يتم العثور على حصة التدريب."); return; }
   const windowError = attendanceWindowError(session, localDateString());
@@ -3151,14 +3227,40 @@ async function deleteGuardian(guardianId) {
 }
 
 function coachPaymentsView() {
-  const payments = [...data.payments].sort((a, b) => b.createdAt - a.createdAt);
-  const paymentRows = payments.map(payment => {
+  const newestFirst = (a, b) => Number(b.confirmedAt || b.createdAt || 0) - Number(a.confirmedAt || a.createdAt || 0);
+  const pendingPayments = data.payments.filter(payment => payment.status === "بانتظار المراجعة").sort(newestFirst);
+  const confirmedPayments = data.payments.filter(payment => isRecordedPayment(payment) && payment.status !== "دفع جزئي نقدًا").sort(newestFirst);
+  const pendingPlayerIds = new Set(pendingPayments.map(payment => payment.playerId));
+  const latestPaymentByPlayer = new Map();
+  [...data.payments].sort(newestFirst).forEach(payment => {
+    if (!latestPaymentByPlayer.has(payment.playerId)) latestPaymentByPlayer.set(payment.playerId, payment);
+  });
+  const unpaidPlayers = data.users
+    .filter(user => {
+      const latestPayment = latestPaymentByPlayer.get(user.id);
+      const latestPaymentConfirmed = latestPayment
+        && isRecordedPayment(latestPayment)
+        && latestPayment.status !== "دفع جزئي نقدًا";
+      return user.role === "member" && !pendingPlayerIds.has(user.id) && !latestPaymentConfirmed;
+    })
+    .map(user => ({
+      user,
+      payment: latestPaymentByPlayer.get(user.id) || null
+    }))
+    .sort((a, b) => newestFirst(
+      a.payment || { createdAt: a.user.updatedAt || a.user.createdAt || 0 },
+      b.payment || { createdAt: b.user.updatedAt || b.user.createdAt || 0 }
+    ) || String(a.user.name || "").localeCompare(String(b.user.name || ""), "ar"));
+  const paymentRow = payment => {
     const user = data.users.find(item => item.id === payment.playerId);
     const paid = isRecordedPayment(payment);
     const paidMessage = payment.status === "سداد مديونية نقدية"
       ? `تم تسجيل سداد مديونية اللاعب ${payment.playerName} بقيمة ${payment.amount} ج.م.`
       : `تم تأكيد دفع اشتراك اللاعب ${payment.playerName} بقيمة ${payment.amount} ج.م وتفعيل الاشتراك.`;
-    const paymentTime = payment.paidTime || new Date(payment.createdAt).toLocaleTimeString("ar-EG", { hour: "2-digit", minute: "2-digit" });
+    const timestamp = Number(payment.confirmedAt || payment.createdAt);
+    const paymentTime = payment.paidTime || (Number.isFinite(timestamp) && timestamp
+      ? new Date(timestamp).toLocaleTimeString("ar-EG", { hour: "2-digit", minute: "2-digit" })
+      : "—");
     const requiresResubmission = payment.status === "بانتظار المراجعة"
       && (payment.method !== "instapay"
         || !Number.isInteger(Number(payment.planId))
@@ -3172,10 +3274,24 @@ function coachPaymentsView() {
         ? `<button class="small-action" data-action="reject-payment" data-payment="${escapeHtml(payment.id)}">رفض لإعادة تقديمه بالمبلغ الصحيح</button>`
         : `<button class="small-action" data-action="confirm-payment" data-payment="${escapeHtml(payment.id)}" ${user && canRequestPayment(user) ? "" : "disabled"}>مراجعة المبلغ وتأكيده</button>`;
     return `<tr><td>${escapeHtml(payment.playerName)}</td><td>${escapeHtml(payment.planName)}<small class="table-subtext">${escapeHtml(subscriptionDurationLabel(payment.subscriptionDuration))}</small>${payment.originalPlanName && payment.originalPlanName !== payment.planName ? `<small class="table-subtext">الباقة المطلوبة: ${escapeHtml(payment.originalPlanName)}</small>` : ""}<br><strong>${arabicDigits(payment.amount)} ج.م</strong>${payment.walletCreditReserved ? `<small class="table-subtext">رصيد محفظة مستخدم/محجوز: ${arabicDigits(payment.walletCreditReserved)} ج.م</small>` : ""}${payment.walletCreditAddedAmount ? `<small class="table-subtext">رصيد دائن مضاف: ${arabicDigits(payment.walletCreditAddedAmount)} ج.م</small>` : ""}${payment.walletCreditUsedAmount ? `<small class="table-subtext">رصيد مخصوم: ${arabicDigits(payment.walletCreditUsedAmount)} ج.م</small>` : ""}${payment.siblingDiscount ? `<small class="table-subtext">خصم إخوة ${arabicDigits(payment.siblingDiscount)} ج.م</small>` : ""}${payment.specialDiscountAmount ? `<small class="table-subtext">خصم استثنائي ${arabicDigits(payment.specialDiscountAmount)} ج.م</small>` : ""}${payment.debtAddedAmount ? `<small class="table-subtext">مديونية مضافة ${arabicDigits(payment.debtAddedAmount)} ج.م</small>` : ""}</td><td>${escapeHtml(payment.method === "cash" ? "نقدي" : payment.methodLabel || "تحويل")}</td><td><strong class="payment-reference">${escapeHtml(payment.reference || "—")}</strong>${payment.reference && payment.method !== "cash" ? `<button class="copy-code" data-action="copy-text" data-copy="${escapeHtml(payment.reference)}">نسخ كود الدفع</button>` : ""}</td><td>${payment.receiptImage ? `<button type="button" class="receipt-preview" data-action="receipt-preview" data-receipt="${escapeHtml(payment.receiptImage)}" data-player="${escapeHtml(payment.playerName)}"><img class="receipt-thumbnail" src="${escapeHtml(payment.receiptImage)}" alt="إيصال تحويل ${escapeHtml(payment.playerName)}"><span>اضغط لتكبير الإيصال</span></button>` : "—"}</td><td>${escapeHtml(payment.date)}<br>${escapeHtml(paymentTime)}</td><td>${action}</td></tr>`;
-  }).join("");
+  };
+  const unpaidRow = ({ user, payment }) => payment
+    ? paymentRow(payment)
+    : `<tr><td>${escapeHtml(user.name)}</td><td>${escapeHtml(priceSummary(user.weeklyDays?.length || user.weeklyDaysCount).plan.name)}<small class="table-subtext">لا يوجد اشتراك مدفوع مسجل</small></td><td>—</td><td>—</td><td>—</td><td>—</td><td><span class="subscription-badge status-soon">لم يسدد بعد</span></td></tr>`;
+  const columns = "<thead><tr><th>اللاعب</th><th>الباقة والمبلغ</th><th>طريقة الدفع</th><th>مرجع / كود الدفع</th><th>الإيصال</th><th>تاريخ وساعة الدفع</th><th>الحالة والإجراء</th></tr></thead>";
+  const paymentTable = rows => `<div class="table-wrap"><table>${columns}<tbody>${rows}</tbody></table></div>`;
+  const paymentSection = (title, count, content) => `<section class="panel"><div class="panel-heading"><h2>${title} <small>(${arabicDigits(count)})</small></h2></div>${content}</section>`;
   return `<section class="page-intro"><div><p class="eyebrow">التحصيل المالي</p><h1>طلبات الدفع</h1><p class="welcome-subtitle">راجع كود التحويل والرسالة الواردة عبر واتساب قبل تأكيد أي دفعة.</p></div><button class="primary-button" data-action="instapay-settings">بيانات التحويل</button></section>
     <section class="instapay-panel coach-instapay"><span class="instapay-brand">⇄</span><div><h2>بيانات التحويل الحالية</h2><p>${data.instaPayAddress ? escapeHtml(data.instaPayAddress) : "لم تتم إضافة بيانات الدفع بعد."}</p></div></section>
-    <section class="panel">${payments.length ? `<div class="table-wrap"><table><thead><tr><th>اللاعب</th><th>الباقة والمبلغ</th><th>طريقة الدفع</th><th>مرجع / كود الدفع</th><th>الإيصال</th><th>تاريخ وساعة الدفع</th><th>الحالة والإجراء</th></tr></thead><tbody>${paymentRows}</tbody></table></div>` : '<div class="empty-state"><p>لا توجد تحويلات مسجلة حتى الآن.</p></div>'}</section>`;
+    ${paymentSection("طلبات الدفع المرسلة", pendingPayments.length, pendingPayments.length
+      ? paymentTable(pendingPayments.map(paymentRow).join(""))
+      : '<div class="empty-state"><p>لا توجد طلبات دفع مرسلة بانتظار المراجعة.</p></div>')}
+    ${paymentSection("لاعبون لم يسددوا بعد", unpaidPlayers.length, unpaidPlayers.length
+      ? paymentTable(unpaidPlayers.map(unpaidRow).join(""))
+      : '<div class="empty-state"><p>لا يوجد لاعبون غير مسددين.</p></div>')}
+    ${paymentSection("مدفوعات مؤكدة", confirmedPayments.length, confirmedPayments.length
+      ? paymentTable(confirmedPayments.map(paymentRow).join(""))
+      : '<div class="empty-state"><p>لا توجد مدفوعات مؤكدة.</p></div>')}`;
 }
 
 function openModal(title, fields, submitLabel, submitAction, kicker = "الاتحاد أكادمي") {
@@ -3204,6 +3320,10 @@ function openModal(title, fields, submitLabel, submitAction, kicker = "الات�
 }
 
 function closeModal() {
+  if (attendanceClockInterval !== null) {
+    clearInterval(attendanceClockInterval);
+    attendanceClockInterval = null;
+  }
   byId("action-modal").classList.remove("open");
   byId("action-modal").setAttribute("aria-hidden", "true");
 }
@@ -3354,14 +3474,19 @@ function requestPayment(planId) {
   }));
   const eligiblePlayers = selectablePlayers.filter(item => item.eligible);
   if (!eligiblePlayers.some(item => item.player.id === player.id)) { showToast("اللاعب المحدد غير جاهز لطلب الدفع."); return; }
-  const renderPaymentOptions = (duration, selectedIds) => selectablePlayers.map(item => {
-    const checked = selectedIds.has(item.player.id);
-    const planPrice = subscriptionPrice(item.dayCount, duration);
-    const amountBeforeDiscount = Math.max(0, planPrice - item.walletCreditReserved);
-    const siblingDiscount = duration === "full" ? siblingDiscountForPlayer(item.player, amountBeforeDiscount) : 0;
-    const transferDue = amountBeforeDiscount - siblingDiscount;
-    return `<div class="cash-sibling-option"><label class="cash-sibling-choice"><input type="checkbox" name="playerIds" value="${escapeHtml(item.player.id)}" ${checked ? "checked" : ""} ${item.player.id === player.id ? "data-primary-player" : ""} ${item.eligible ? "" : "disabled"}><span><strong>${escapeHtml(item.player.name)}</strong><small>${escapeHtml(item.plan.name)} · ${escapeHtml(subscriptionDurationLabel(duration))} · السعر ${arabicDigits(planPrice)} ج.م · رصيد ${arabicDigits(item.walletCreditReserved)} ج.م${siblingDiscount ? ` · خصم إخوة ${arabicDigits(siblingDiscount)} ج.م` : ""} · التحويل ${arabicDigits(transferDue)} ج.م${item.eligible ? "" : " · غير متاح للدفع الآن"}</small></span></label></div>`;
-  }).join("");
+  const renderPaymentOptions = (duration, selectedIds) => {
+    const selectedPlayers = [...selectedIds]
+      .map(id => selectablePlayers.find(candidate => candidate.player.id === id)?.player)
+      .filter(Boolean);
+    return selectablePlayers.map(item => {
+      const checked = selectedIds.has(item.player.id);
+      const planPrice = subscriptionPrice(item.dayCount, duration);
+      const amountBeforeDiscount = Math.max(0, planPrice - item.walletCreditReserved);
+      const siblingDiscount = duration === "full" ? siblingDiscountForPlayer(item.player, amountBeforeDiscount, selectedPlayers) : 0;
+      const transferDue = amountBeforeDiscount - siblingDiscount;
+      return `<div class="cash-sibling-option"><label class="cash-sibling-choice"><input type="checkbox" name="playerIds" value="${escapeHtml(item.player.id)}" ${checked ? "checked" : ""} ${item.player.id === player.id ? "data-primary-player" : ""} ${item.eligible ? "" : "disabled"}><span><strong>${escapeHtml(item.player.name)}</strong><small>${escapeHtml(item.plan.name)} · ${escapeHtml(subscriptionDurationLabel(duration))} · السعر ${arabicDigits(planPrice)} ج.م · رصيد ${arabicDigits(item.walletCreditReserved)} ج.م${siblingDiscount ? ` · خصم إخوة ${arabicDigits(siblingDiscount)} ج.م` : ""} · التحويل ${arabicDigits(transferDue)} ج.م${item.eligible ? "" : " · غير متاح للدفع الآن"}</small></span></label></div>`;
+    }).join("");
+  };
   const initialPaymentOptions = renderPaymentOptions("full", new Set([player.id]));
   const initialQuote = subscriptionGroupQuote([eligiblePlayers.find(item => item.player.id === player.id)]);
   if (initialQuote.total && !data.instaPayAddress) { showToast("لم تضف الأكاديمية بيانات التحويل بعد. تواصل مع المدرب."); return; }
@@ -3409,11 +3534,12 @@ function requestPayment(planId) {
     const whatsappTab = quote.total > 0 ? window.open("about:blank", "_blank") : null;
     const submittedAt = Date.now();
     const allocations = quote.players;
+    const paymentGroupId = crypto.randomUUID();
     const submissions = allocations.map(allocation => {
       const payment = {
         id: crypto.randomUUID(), guardianId: currentUser.id, playerId: allocation.player.id,
         playerName: allocation.player.name, planId: allocation.dayCount, planName: allocation.plan.name,
-        subscriptionDuration,
+        subscriptionDuration, paymentGroupId,
         amount: allocation.amount,
         ...(allocation.siblingDiscount ? { siblingDiscount: allocation.siblingDiscount } : {}),
         walletCreditReserved: allocation.walletCreditReserved,
@@ -3478,6 +3604,8 @@ function requestPayment(planId) {
     const selected = [...form.querySelectorAll('input[name="playerIds"]:checked')]
       .map(input => eligiblePlayers.find(item => item.player.id === input.value))
       .filter(Boolean);
+    const selectedIds = new Set(selected.map(item => item.player.id));
+    byId("instapay-player-options").innerHTML = `<legend>الأبناء المراد دفع اشتراكاتهم</legend>${renderPaymentOptions(subscriptionDuration, selectedIds)}`;
     const quote = subscriptionGroupQuote(selected, subscriptionDuration);
     form.querySelector('input[name="amount"]').value = String(quote.total);
     byId("instapay-payment-summary").innerHTML = subscriptionGroupSummary(quote);
@@ -3494,12 +3622,14 @@ function requestPayment(planId) {
 
 function subscriptionGroupQuote(players, duration = "full") {
   const subscriptionDuration = normalizeSubscriptionDuration(duration);
-  const validPlayers = players.filter(Boolean).map(item => {
+  const selectedPlayers = players.filter(Boolean);
+  const selectedSiblings = selectedPlayers.map(item => item.player);
+  const validPlayers = selectedPlayers.map(item => {
     const walletCreditReserved = memberWalletBalance(item.player);
     const planPrice = subscriptionPrice(item.dayCount, subscriptionDuration);
     const amountBeforeDiscount = Math.max(0, planPrice - walletCreditReserved);
     const siblingDiscount = subscriptionDuration === "full"
-      ? siblingDiscountForPlayer(item.player, amountBeforeDiscount)
+      ? siblingDiscountForPlayer(item.player, amountBeforeDiscount, selectedSiblings)
       : 0;
     return {
       ...item,
@@ -3524,7 +3654,7 @@ function subscriptionGroupSummary(quote) {
   const breakdown = quote.players.map(item =>
     `${escapeHtml(item.player.name)}: ${subscriptionDurationLabel(item.subscriptionDuration)} · سعر ${arabicDigits(item.planPrice)} ج.م − رصيد ${arabicDigits(item.walletCreditReserved)} ج.م${item.siblingDiscount ? ` − خصم إخوة ${arabicDigits(item.siblingDiscount)} ج.م` : ""} = تحويل ${arabicDigits(item.amount)} ج.م`
   ).join(" · ");
-  return `الاشتراكات: ${breakdown || "اختر لاعبًا واحدًا على الأقل."}<br>إجمالي الخصم ${arabicDigits(quote.discount)} ج.م · إجمالي التحويل بعد خصم الأرصدة وخصم الإخوة: ${arabicDigits(quote.total)} ج.م.`;
+  return `الاشتراكات: ${breakdown || "اختر لاعبًا واحدًا على الأقل."}<br>إجمالي الخصم ${arabicDigits(quote.discount)} ج.م · إجمالي التحويل بعد خصم الأرصدة وخصم الإخوة: ${arabicDigits(quote.total)} ج.م.<br>خصم الإخوة ٥٠ ج.م لكل لاعب عند سداد اشتراك شهر كامل لشقيقين أو أكثر معًا على نفس باقة يومين أو ثلاثة أيام أسبوعيًا.`;
 }
 
 function trainingExerciseRows(exercises, trainers) {
@@ -3720,6 +3850,7 @@ function confirmPayment(paymentId) {
   const subscriptionDuration = normalizeSubscriptionDuration(payment.subscriptionDuration);
   const fullPrice = subscriptionPrice(payment.planId, subscriptionDuration);
   const siblingDiscount = Number(payment.siblingDiscount || 0);
+  const paymentGroupPlayers = playersForPaymentGroup(payment, user);
   const reservedWalletCredit = Number.isInteger(Number(payment.walletCreditReserved))
     ? Math.max(0, Number(payment.walletCreditReserved))
     : memberWalletBalance(user);
@@ -3791,6 +3922,7 @@ function applyPaymentConfirmation(form, paymentId) {
   const requestedDayCount = Number(payment.planId);
   const subscriptionDuration = normalizeSubscriptionDuration(payment.subscriptionDuration);
   const requestedPrice = subscriptionPrice(requestedDayCount, subscriptionDuration);
+  const paymentGroupPlayers = playersForPaymentGroup(payment, user);
   const walletBalance = memberWalletBalance(user);
   const reservedWalletCredit = payment.walletCreditReserved === undefined
     ? walletBalance
@@ -3805,7 +3937,7 @@ function applyPaymentConfirmation(form, paymentId) {
     || (payment.siblingDiscount !== undefined
       && siblingDiscount !== (subscriptionDuration === "half"
         ? 0
-        : siblingDiscountForPlayer(user, Math.max(0, requestedPrice - reservedWalletCredit))))) {
+        : siblingDiscountForPlayer(user, Math.max(0, requestedPrice - reservedWalletCredit), paymentGroupPlayers)))) {
     showToast("تغير استحقاق خصم الإخوة منذ إرسال الطلب. أعد مراجعته مع ولي الأمر.");
     return;
   }
@@ -3928,6 +4060,14 @@ function applyPaymentConfirmation(form, paymentId) {
   }
 }
 
+function playersForPaymentGroup(payment, user) {
+  if (!payment.paymentGroupId) return [];
+  return data.payments
+    .filter(item => item.paymentGroupId === payment.paymentGroupId && item.guardianId === user.guardianId)
+    .map(item => data.users.find(candidate => candidate.id === item.playerId))
+    .filter(Boolean);
+}
+
 function cashPaymentDetails(user, duration = cashPartialDuration(user)) {
   const dayCount = user.weeklyDays?.length || user.weeklyDaysCount;
   const plan = priceSummary(dayCount).plan;
@@ -3964,37 +4104,26 @@ function cashPaymentEligibility(user) {
     && (details.remainingAmount > 0 || details.walletBalance > 0);
 }
 
-function qualifiesForSiblingDiscount(user) {
-  const dayCount = Number(user.weeklyDays?.length || user.weeklyDaysCount || 0);
-  return dayCount === 2 || dayCount === 3;
-}
-
-function familyQualifiesForSiblingDiscount(siblings) {
-  return siblings.length >= 2
-    && siblings.every(qualifiesForSiblingDiscount)
-    && siblings.every(sibling =>
-      Number(sibling.weeklyDays?.length || sibling.weeklyDaysCount || 0)
-        === Number(siblings[0].weeklyDays?.length || siblings[0].weeklyDaysCount || 0)
-    );
-}
-
-function siblingDiscountForPlayer(user, eligibleAmount) {
-  if (!user.guardianId) return 0;
-  const siblings = data.users.filter(item =>
-    item.role === "member" && item.guardianId === user.guardianId
-  );
-  return familyQualifiesForSiblingDiscount(siblings)
+function siblingDiscountForPlayer(user, eligibleAmount, selectedPlayers = []) {
+  return siblingDiscountEligible(selectedPlayers, user.guardianId)
     ? Math.min(SIBLING_DISCOUNT_PER_PLAYER, Math.max(0, eligibleAmount))
     : 0;
 }
 
+function siblingDiscountEligible(players, guardianId = players[0]?.guardianId) {
+  if (!guardianId) return false;
+  const siblings = [...new Map(players
+    .filter(player => player?.id && player.guardianId === guardianId)
+    .map(player => [player.id, player])).values()];
+  if (siblings.length < 2) return false;
+  const dayCounts = siblings.map(player => Number(player.weeklyDays?.length || player.weeklyDaysCount));
+  return dayCounts.every(dayCount => dayCount === 2 || dayCount === 3)
+    && dayCounts.every(dayCount => dayCount === dayCounts[0]);
+}
+
 function cashPaymentQuote(players, duration = players[0] ? cashPartialDuration(players[0]) : "full") {
   const subscriptionDuration = normalizeSubscriptionDuration(duration);
-  const guardianId = players[0]?.guardianId;
-  const siblings = guardianId
-    ? data.users.filter(user => user.role === "member" && user.guardianId === guardianId)
-    : [];
-  const familyQualifies = familyQualifiesForSiblingDiscount(siblings);
+  const payingTogether = siblingDiscountEligible(players);
   const balances = players.map(user => {
     const partialDuration = cashPartialDuration(user);
     if (hasPartialCashPayment(user) && partialDuration !== subscriptionDuration) {
@@ -4005,7 +4134,7 @@ function cashPaymentQuote(players, duration = players[0] ? cashPartialDuration(p
       .filter(payment => payment.playerId === user.id
         && ["دفع جزئي نقدًا", "تم تطبيق خصم إخوة"].includes(payment.status))
       .reduce((total, payment) => total + Number(payment.siblingDiscount || 0), 0);
-    const siblingDiscount = subscriptionDuration === "full" && familyQualifies
+    const siblingDiscount = subscriptionDuration === "full" && payingTogether
       ? Math.min(
         Math.max(0, SIBLING_DISCOUNT_PER_PLAYER - previousSiblingDiscount),
         details.remainingAmount
@@ -4054,26 +4183,41 @@ function recordCashPayment(playerId) {
   const siblings = data.users.filter(item => item.role === "member" && item.guardianId === user.guardianId);
   const selectablePlayers = siblings.length ? siblings : [user];
   const subscriptionDuration = cashPartialDuration(user);
-  const renderCashPlayerOptions = (duration, selectedIds) => selectablePlayers.map(sibling => {
-    const siblingDetails = cashPaymentDetails(sibling);
-    const isEligible = cashPaymentEligibility(sibling);
-    const partialDurationMismatch = hasPartialCashPayment(sibling) && siblingDetails.subscriptionDuration !== duration;
-    const planPrice = subscriptionPrice(siblingDetails.dayCount, duration);
-    const beforeDiscount = Math.max(0, planPrice - siblingDetails.walletBalance);
-    const discount = duration === "full" ? siblingDiscountForPlayer(sibling, beforeDiscount) : 0;
-    const previousPaid = partialDurationMismatch ? 0 : siblingDetails.previousCashPaid;
-    const remaining = Math.max(0, planPrice - previousPaid - (partialDurationMismatch ? 0 : siblingDetails.previousSiblingDiscount) - siblingDetails.walletBalance);
-    const description = `${siblingDetails.plan.name} · ${subscriptionDurationLabel(duration)} · المستحق ${arabicDigits(remaining)} ج.م · رصيد ${arabicDigits(siblingDetails.walletBalance)} ج.م${discount ? ` · خصم إخوة ${arabicDigits(discount)} ج.م` : ""}${partialDurationMismatch ? " · مدة الدفعة الجزئية السابقة مختلفة" : ""}${isEligible ? "" : " · غير متاح للدفع حاليًا"}`;
-    const checked = selectedIds.has(sibling.id) && !partialDurationMismatch;
-    const disabled = !isEligible || partialDurationMismatch;
-    return `<div class="cash-sibling-option"><label class="cash-sibling-choice"><input type="checkbox" name="playerIds" value="${escapeHtml(sibling.id)}" ${checked ? "checked" : ""} ${sibling.id === user.id ? "data-primary-player" : ""} ${disabled ? "disabled" : ""}><span><strong>${escapeHtml(sibling.name)}</strong><small>${escapeHtml(description)}${isEligible && !partialDurationMismatch ? " · تاريخ البداية يحدده أقرب تمرين متاح تلقائيًا" : ""}</small></span></label></div>`;
-  }).join("");
+  const renderCashPlayerOptions = (duration, selectedIds) => {
+    const selectedPlayers = [...selectedIds]
+      .map(id => selectablePlayers.find(candidate => candidate.id === id))
+      .filter(Boolean);
+    return selectablePlayers.map(sibling => {
+      const siblingDetails = cashPaymentDetails(sibling);
+      const isEligible = cashPaymentEligibility(sibling);
+      const partialDurationMismatch = hasPartialCashPayment(sibling) && siblingDetails.subscriptionDuration !== duration;
+      const planPrice = subscriptionPrice(siblingDetails.dayCount, duration);
+      const previousPaid = partialDurationMismatch ? 0 : siblingDetails.previousCashPaid;
+      const beforeDiscount = Math.max(0,
+        planPrice - previousPaid
+        - (partialDurationMismatch ? 0 : siblingDetails.previousSiblingDiscount)
+        - siblingDetails.walletBalance
+      );
+      const discount = duration === "full"
+        ? Math.min(
+          Math.max(0, SIBLING_DISCOUNT_PER_PLAYER - siblingDetails.previousSiblingDiscount),
+          beforeDiscount,
+          siblingDiscountForPlayer(sibling, beforeDiscount, selectedPlayers)
+        )
+        : 0;
+      const remaining = Math.max(0, beforeDiscount - discount);
+      const description = `${siblingDetails.plan.name} · ${subscriptionDurationLabel(duration)} · المستحق ${arabicDigits(remaining)} ج.م · رصيد ${arabicDigits(siblingDetails.walletBalance)} ج.م${discount ? ` · خصم إخوة ${arabicDigits(discount)} ج.م` : ""}${partialDurationMismatch ? " · مدة الدفعة الجزئية السابقة مختلفة" : ""}${isEligible ? "" : " · غير متاح للدفع حاليًا"}`;
+      const checked = selectedIds.has(sibling.id) && !partialDurationMismatch;
+      const disabled = !isEligible || partialDurationMismatch;
+      return `<div class="cash-sibling-option"><label class="cash-sibling-choice"><input type="checkbox" name="playerIds" value="${escapeHtml(sibling.id)}" ${checked ? "checked" : ""} ${sibling.id === user.id ? "data-primary-player" : ""} ${disabled ? "disabled" : ""}><span><strong>${escapeHtml(sibling.name)}</strong><small>${escapeHtml(description)}${isEligible && !partialDurationMismatch ? " · تاريخ البداية يحدده أقرب تمرين متاح تلقائيًا" : ""}</small></span></label></div>`;
+    }).join("");
+  };
   const quote = cashPaymentQuote([user], subscriptionDuration);
   const discountMessage = subscriptionDuration === "half"
     ? "اشتراك نصف شهر؛ لا تنطبق عليه أي خصومات."
     : quote.discount
       ? `تم احتساب خصم إخوة ${arabicDigits(quote.discount)} ج.م لهذا اللاعب.`
-      : `يشترط لخصم الإخوة وجود أخوين أو أكثر، وأن يتدرب جميع الإخوة يومين أو ثلاثة أيام أسبوعيًا وبنفس الباقة. يخصم ${arabicDigits(SIBLING_DISCOUNT_PER_PLAYER)} ج.م لكل لاعب.`;
+      : `يُطبق خصم ${arabicDigits(SIBLING_DISCOUNT_PER_PLAYER)} ج.م لكل ابن عند تسجيل اشتراك ابنين أو أكثر معًا على نفس باقة يومين أو ثلاثة أيام أسبوعيًا.`;
   const now = new Date();
   const paidDate = localDateString(now);
   const paidTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
@@ -4093,6 +4237,8 @@ function recordCashPayment(playerId) {
     const selected = [...form.querySelectorAll('input[name="playerIds"]:checked')]
       .map(input => data.users.find(item => item.id === input.value && item.role === "member"))
       .filter(Boolean);
+    const selectedIds = new Set(selected.map(item => item.id));
+    byId("cash-player-options").innerHTML = `<legend>اللاعبون الذين يسددون معًا</legend>${renderCashPlayerOptions(duration, selectedIds)}`;
     const updatedQuote = cashPaymentQuote(selected, duration);
     const amountInput = form.querySelector('input[name="amount"]');
     const summary = byId("cash-payment-summary");
