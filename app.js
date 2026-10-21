@@ -4628,7 +4628,7 @@ byId("coach-form").addEventListener("submit", event => {
   (async () => {
     try {
       const firebase = await window.firebaseReady;
-      const profile = await firebase.signInCoach(normalizeDigits(String(form.get("password"))));
+      const profile = await firebase.signInCoach(String(form.get("password")));
       if (profile.role !== "coach") {
         await firebase.signOut();
         throw new Error("هذا الحساب غير مسجل بدور مشرف الأكاديمية.");
