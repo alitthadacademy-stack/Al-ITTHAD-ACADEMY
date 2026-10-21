@@ -441,11 +441,6 @@ function academyServices() {
           if (profileSnapshot.exists()) throw new Error("هذا الحساب مسجل بالفعل.");
           const playerRefs = registeredPlayers.map(player => doc(db, "players", player.playerCode));
           const codeRefs = registeredPlayers.map(player => playerCodeRef(player.playerCode));
-          const playerSnapshots = await Promise.all(playerRefs.map(reference => transaction.get(reference)));
-          const codeSnapshots = await Promise.all(codeRefs.map(reference => transaction.get(reference)));
-          if (playerSnapshots.some(snapshot => snapshot.exists()) || codeSnapshots.some(snapshot => snapshot.exists())) {
-            throw new Error("تعذر حجز أكواد الأبناء. حاول إنشاء الحساب مرة أخرى.");
-          }
           transaction.set(profileRef, { ...guardianProfile, createdAt: serverTimestamp() });
           registeredPlayers.forEach((player, index) => {
             const safePlayer = playerForFirestore(player);

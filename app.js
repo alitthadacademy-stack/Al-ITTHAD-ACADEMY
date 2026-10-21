@@ -1031,12 +1031,21 @@ function attendedUnpaidSessionCount(user) {
   ).length;
 }
 
+function isInitialSubscriptionSetup(user) {
+  if (!user || playerTrainingBalance(user).used > 0 || hasPendingPayment(user)) return false;
+  const subscriptionDates = ["expectedStartDate", "actualStartDate", "subscriptionStart", "subscriptionEnd", "endDate"];
+  return !subscriptionDates.some(field => user[field]);
+}
+
 function canEditPlayerSchedule(user) {
   if (!user) return false;
   const remainingSessions = playerTrainingBalance(user).remaining;
   const isExpiredWithUnpaidAttendance = subscriptionState(user).className === "status-expired"
     && attendedUnpaidSessionCount(user) > 0;
-  return remainingSessions === 1 || isExpiredWithUnpaidAttendance || hasPartialCashPayment(user);
+  return isInitialSubscriptionSetup(user)
+    || remainingSessions === 1
+    || isExpiredWithUnpaidAttendance
+    || hasPartialCashPayment(user);
 }
 
 function priceSummary(planId) {
@@ -1529,7 +1538,9 @@ function memberScheduleView() {
   const selectedIds = new Set(selectedSessions.map(session => session.id));
   const canEditSchedule = canEditPlayerSchedule(user);
   const scheduleEditNote = canEditSchedule
-    ? "يمكنك تعديل الجدول حسب حالة اشتراكك الحالية."
+    ? isInitialSubscriptionSetup(user)
+      ? "اختر مواعيد اشتراكك الأول قبل إرسال طلب الدفع."
+      : "يمكنك تعديل الجدول حسب حالة اشتراكك الحالية."
     : "تعديل الجدول متاح عند تبقي تدريب واحد، أو وجود تدريبات غير مدفوعة بعد انتهاء الاشتراك، أو وجود دفع جزئي.";
   const selectionForm = availableSessions.length ? `<section class="panel"><div class="panel-heading"><div><h2>اختر مواعيدك المفضلة</h2><p>اختر الوقت الأنسب للاعب. ${scheduleEditNote}</p></div></div><form id="member-sessions-form"><div class="session-choice-list">${availableSessions.map(session => `<label class="session-choice"><input type="checkbox" name="sessionIds" value="${escapeHtml(session.id)}" ${selectedIds.has(session.id) ? "checked" : ""} ${canEditSchedule ? "" : "disabled"}><span><strong>${escapeHtml(readableSessionTitle(session.title))}</strong><small>${escapeHtml(sessionDays(session).join("، "))} · ${escapeHtml(sessionTimeRange(session))} · ${escapeHtml(session.place)} · ${escapeHtml(session.coach)}</small></span></label>`).join("")}</div><button class="primary-button" type="submit" ${canEditSchedule ? "" : "disabled"}>حفظ المواعيد المختارة</button></form></section>` : `<section class="panel"><div class="empty-state"><p>لا توجد مواعيد لفئتك وأيام تدريبك حاليًا. تواصل مع الأكاديمية لاختيار موعد.</p></div></section>`;
   const sessions = selectedSessions.length ? selectedSessions : sessionsForMember(user);
@@ -1615,7 +1626,9 @@ function memberSubscriptionView() {
   const endDate = user.subscriptionEnd ? egyptianDate.format(new Date(`${user.subscriptionEnd}T12:00:00`)) : "لم يتم التفعيل بعد";
   const canEditSchedule = canEditPlayerSchedule(user);
   const scheduleEditNote = canEditSchedule
-    ? ""
+    ? isInitialSubscriptionSetup(user)
+      ? '<p class="form-note">اختر أيام تدريبك وجدولك قبل إرسال طلب الاشتراك الأول.</p>'
+      : ""
     : '<p class="form-note">تعديل أيام التدريب متاح عند تبقي تدريب واحد، أو وجود تدريبات غير مدفوعة بعد انتهاء الاشتراك، أو وجود دفع جزئي.</p>';
   const daysInput = dayCheckboxes(data.workDays, selectedDays, "weeklyDays", !canEditSchedule);
   const pendingPayment = hasPendingPayment(user);
