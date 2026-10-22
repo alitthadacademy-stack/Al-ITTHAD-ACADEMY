@@ -199,14 +199,14 @@ async function messagingClient() {
   if (!("Notification" in window) || !("serviceWorker" in navigator) || !(await isMessagingSupported())) {
     throw new Error("هذا المتصفح أو الجهاز لا يدعم إشعارات Firebase. افتح الموقع عبر HTTPS على متصفح حديث.");
   }
-  const legacyWorkerUrl = new URL("./firebase-messaging-sw.js", document.baseURI).href;
+  const legacyWorkerUrl = new URL("./public/firebase-messaging-sw.js", document.baseURI).href;
   const registrations = await navigator.serviceWorker.getRegistrations();
   const legacyRegistrations = registrations.filter(registration =>
     [registration.installing, registration.waiting, registration.active]
       .some(worker => worker?.scriptURL === legacyWorkerUrl)
   );
   await Promise.all(legacyRegistrations.map(registration => registration.unregister()));
-  const workerUrl = new URL("./public/firebase-messaging-sw.js", document.baseURI);
+  const workerUrl = new URL("./firebase-messaging-sw.js", document.baseURI);
   const registration = await navigator.serviceWorker.register(workerUrl);
   const messaging = getMessaging(app);
   return { messaging, registration };

@@ -15,10 +15,11 @@ const messaging = firebase.messaging();
 messaging.onBackgroundMessage(payload => {
   const title = payload.data?.title || "الاتحاد أكادمي";
   const body = payload.data?.body || "لديك تحديث جديد من الأكاديمية.";
+  const icon = new URL("./app-icon.svg", self.location.href).href;
   return self.registration.showNotification(title, {
     body,
-    icon: "./app-icon.png?v=2",
-    badge: "./app-icon.png?v=2",
+    icon,
+    badge: icon,
     tag: payload.data?.eventId || undefined,
     data: { url: payload.data?.url || "/" }
   });
@@ -26,6 +27,7 @@ messaging.onBackgroundMessage(payload => {
 
 self.addEventListener("notificationclick", event => {
   event.notification.close();
-  const url = new URL(event.notification.data?.url || "/", self.location.origin).href;
-  event.waitUntil(self.clients.openWindow(url));
+  const target = new URL(event.notification.data?.url || "/", self.location.origin);
+  if (target.origin !== self.location.origin) target.href = self.location.origin;
+  event.waitUntil(self.clients.openWindow(target.href));
 });
