@@ -86,7 +86,19 @@ service cloud.firestore {
           && request.resource.data.role == resource.data.role
           && request.resource.data.email == resource.data.email
           && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(['name', 'guardianPhone', 'whatsappPhone', 'updatedAt']));
+            .hasOnly(['name', 'guardianPhone', 'whatsappPhone', 'updatedAt', 'fcmToken'])
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['fcmToken'])
+            || !request.resource.data.keys().hasAny(['fcmToken'])
+            || (request.resource.data.fcmToken is string
+              && request.resource.data.fcmToken.size() > 0
+              && request.resource.data.fcmToken.size() <= 4096)))
+        || (isTrainer() && request.auth.uid == uid
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fcmToken'])
+          && (!request.resource.data.keys().hasAny(['fcmToken'])
+            || (request.resource.data.fcmToken is string
+              && request.resource.data.fcmToken.size() > 0
+              && request.resource.data.fcmToken.size() <= 4096)));
       allow delete: if isCoach();
 
       match /deviceSessions/{sessionId} {
@@ -124,7 +136,12 @@ service cloud.firestore {
         || (isMember()
           && get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode == playerCode
           && request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(['weeklyDays', 'weeklyDaysCount', 'plan', 'selectedSessionIds', 'updatedAt']))
+            .hasOnly(['weeklyDays', 'weeklyDaysCount', 'plan', 'selectedSessionIds', 'updatedAt', 'fcmToken'])
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['fcmToken'])
+            || !request.resource.data.keys().hasAny(['fcmToken'])
+            || (request.resource.data.fcmToken is string
+              && request.resource.data.fcmToken.size() > 0
+              && request.resource.data.fcmToken.size() <= 4096)))
         || (isTrainer()
           && request.resource.data.id == resource.data.id
           && request.resource.data.guardianId == resource.data.guardianId

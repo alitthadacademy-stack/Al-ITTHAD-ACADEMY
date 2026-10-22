@@ -18,6 +18,7 @@ import {
   collection,
   connectFirestoreEmulator,
   deleteDoc,
+  deleteField,
   doc,
   getDoc,
   getDocs,
@@ -28,6 +29,7 @@ import {
   runTransaction,
   serverTimestamp,
   setDoc,
+  updateDoc,
   where,
   writeBatch
 } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-firestore.js";
@@ -113,6 +115,31 @@ async function notificationTokenDocumentId(ownerUid, token) {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   const tokenHash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
   return `${ownerUid}_${tokenHash}`;
+}
+
+function notificationProfileReference(profile) {
+  if (profile.role === "member") {
+    if (typeof profile.playerCode !== "string" || !/^\d{6}$/.test(profile.playerCode)) {
+      throw new Error("تعذر تحديد ملف اللاعب لحفظ رمز الإشعارات.");
+    }
+    return doc(db, "players", profile.playerCode);
+  }
+  if (typeof profile.id !== "string" || !profile.id) {
+    throw new Error("تعذر تحديد ملف المستخدم لحفظ رمز الإشعارات.");
+  }
+  return doc(db, "users", profile.id);
+}
+
+async function syncProfileFcmToken(profile, token) {
+  const uid = auth.currentUser?.uid;
+  if (!uid) throw new Error("انتهت جلسة المستخدم قبل تحديث رمز الإشعارات.");
+  const tokens = await getDocs(query(collection(db, "notificationTokens"), where("ownerUid", "==", uid)));
+  const activeToken = token || tokens.docs
+    .map(document => document.data().token)
+    .find(value => typeof value === "string" && value.length > 0);
+  await updateDoc(notificationProfileReference(profile), {
+    fcmToken: activeToken || deleteField()
+  });
 }
 
 async function paymentReferenceClaimId(reference) {
@@ -211,6 +238,7 @@ async function subscribeUserToNotifications(profile) {
     token,
     updatedAt: serverTimestamp()
   });
+  await syncProfileFcmToken(profile, token);
   if (!foregroundMessageUnsubscribe) {
     foregroundMessageUnsubscribe = onMessage(messaging, payload => {
       const title = payload.data?.title || "الاتحاد أكادمي";
@@ -245,6 +273,7 @@ async function unsubscribeUserFromNotifications(profile) {
     await deleteDoc(doc(db, "notificationTokens", tokenId));
     await deleteToken(messaging);
   }
+  await syncProfileFcmToken(profile, null);
   foregroundMessageUnsubscribe?.();
   foregroundMessageUnsubscribe = null;
 }
