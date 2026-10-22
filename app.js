@@ -4,7 +4,7 @@ const DEFAULT_WORK_DAYS = ["السبت", "الأحد", "الإثنين", "الث
 const DEFAULT_DAY_PRICES = { 1: 400, 2: 760, 3: 1020, 4: 1200, 5: 1400, 6: 1600, 7: 1800 };
 const DEFAULT_INSTAPAY_NUMBER = "01017692213";
 const SUBSCRIPTION_DURATIONS = { full: { label: "شهر كامل", days: 30, sessionMultiplier: 1 }, half: { label: "نصف شهر", days: 15, sessionMultiplier: 0.5 } };
-const AGE_CATEGORIES = ["أطفال حتى ٦ سنوات", "براعم تحت ١٠", "ناشئين تحت ١٤", "شباب تحت ١٨", "شباب ١٨+", "جميع الفئات العمرية"];
+const AGE_CATEGORIES = ["أطفال حتى ٧ سنوات", "براعم تحت ١٠", "ناشئين تحت ١٤", "شباب تحت ١٨", "شباب ١٨+", "جميع الفئات العمرية"];
 const SIBLING_DISCOUNT_PER_PLAYER = 50;
 const OWNER_NAME = "حازم الدخاخني";
 const arabicDigits = value => String(value).replace(/\d/g, digit => "٠١٢٣٤٥٦٧٨٩"[digit]);
@@ -120,6 +120,7 @@ function loadData() {
         ...safeUser,
         guardianId,
         playerCode,
+        category: normalizeAgeCategory(user.category),
         joinedAt: user.joinedAt || new Date().toISOString(),
         weeklyDays: Array.isArray(user.weeklyDays) ? user.weeklyDays : workDays.slice(0, legacyDayCount),
         weeklyDaysCount: user.weeklyDaysCount || legacyDayCount,
@@ -137,16 +138,21 @@ function loadData() {
     const sessions = (Array.isArray(parsed.sessions) ? parsed.sessions : []).filter(session => !legacyDemoIds.has(session.id));
     return {
       users: [...normalizedUsers, ...migratedGuardians],
-      sessions: sessions.map(session => ({
-        ...session,
-        coach: session.coach || OWNER_NAME,
-        categories: Array.isArray(session.categories) && session.categories.some(category => AGE_CATEGORIES.includes(category))
-          ? [...new Set(session.categories.filter(category => AGE_CATEGORIES.includes(category)))]
-          : [AGE_CATEGORIES.includes(session.category) ? session.category : "جميع الفئات العمرية"],
-        category: Array.isArray(session.categories) && session.categories.some(category => AGE_CATEGORIES.includes(category))
-          ? [...new Set(session.categories.filter(category => AGE_CATEGORIES.includes(category)))].join("، ")
-          : AGE_CATEGORIES.includes(session.category) ? session.category : "جميع الفئات العمرية"
-      })),
+      sessions: sessions.map(session => {
+        const categories = Array.isArray(session.categories)
+          ? session.categories.map(normalizeAgeCategory).filter(category => AGE_CATEGORIES.includes(category))
+          : [];
+        const normalizedCategory = normalizeAgeCategory(session.category);
+        const normalizedCategories = categories.length
+          ? [...new Set(categories)]
+          : [AGE_CATEGORIES.includes(normalizedCategory) ? normalizedCategory : "جميع الفئات العمرية"];
+        return {
+          ...session,
+          coach: session.coach || OWNER_NAME,
+          categories: normalizedCategories,
+          category: normalizedCategories.join("، ")
+        };
+      }),
       announcements: Array.isArray(parsed.announcements) ? parsed.announcements : [],
       payments: Array.isArray(parsed.payments) ? parsed.payments.map(payment => ({
         ...payment,
@@ -191,11 +197,15 @@ function playerCategoryForBirthDate(birthDate) {
   if (Number.isNaN(birthday.getTime()) || birthDate > localDateString()) return null;
   let age = new Date().getFullYear() - birthday.getFullYear();
   if (new Date().getMonth() < birthday.getMonth() || (new Date().getMonth() === birthday.getMonth() && new Date().getDate() < birthday.getDate())) age -= 1;
-  return age <= 6 ? "أطفال حتى ٦ سنوات" : age < 10 ? "براعم تحت ١٠" : age < 14 ? "ناشئين تحت ١٤" : age < 18 ? "شباب تحت ١٨" : "شباب ١٨+";
+  return age <= 7 ? "أطفال حتى ٧ سنوات" : age < 10 ? "براعم تحت ١٠" : age < 14 ? "ناشئين تحت ١٤" : age < 18 ? "شباب تحت ١٨" : "شباب ١٨+";
+}
+
+function normalizeAgeCategory(category) {
+  return category === "أطفال حتى ٦ سنوات" ? "أطفال حتى ٧ سنوات" : category;
 }
 
 function pendingPlayerCategory(player) {
-  if (!player?.birthDate || !AGE_CATEGORIES.includes(player.category) || player.category === "جميع الفئات العمرية") return null;
+  if (player?.categoryOverride || !player?.birthDate || !AGE_CATEGORIES.includes(player.category) || player.category === "جميع الفئات العمرية") return null;
   const currentCategory = playerCategoryForBirthDate(player.birthDate);
   return currentCategory && currentCategory !== player.category ? currentCategory : null;
 }
@@ -819,11 +829,12 @@ function guardianChildBar() {
 }
 
 function sessionIncludesMember(session, user) {
-  const categories = sessionCategories(session);
+  const categories = sessionCategories(session).map(normalizeAgeCategory);
+  const playerCategory = normalizeAgeCategory(user.category);
   const categoryMatches = categories.includes("جميع الفئات العمرية")
-    || categories.includes(user.category)
-    || !AGE_CATEGORIES.includes(user.category)
-    || user.category === "جميع الفئات العمرية";
+    || categories.includes(playerCategory)
+    || !AGE_CATEGORIES.includes(playerCategory)
+    || playerCategory === "جميع الفئات العمرية";
   const genderMatches = !["male", "female"].includes(session.gender)
     || !["male", "female"].includes(user.gender)
     || session.gender === user.gender;
@@ -839,9 +850,12 @@ function sessionGenderLabel(session) {
 }
 
 function sessionCategories(session) {
-  const categories = Array.isArray(session.categories) ? session.categories.filter(category => AGE_CATEGORIES.includes(category)) : [];
+  const categories = Array.isArray(session.categories)
+    ? session.categories.map(normalizeAgeCategory).filter(category => AGE_CATEGORIES.includes(category))
+    : [];
   if (categories.length) return [...new Set(categories)];
-  return [AGE_CATEGORIES.includes(session.category) ? session.category : "جميع الفئات العمرية"];
+  const category = normalizeAgeCategory(session.category);
+  return [AGE_CATEGORIES.includes(category) ? category : "جميع الفئات العمرية"];
 }
 
 function readableSessionTitle(title) {
@@ -1822,12 +1836,54 @@ function approvePlayerCategory(playerId) {
   const nextCategory = pendingPlayerCategory(player);
   if (!player || !nextCategory) { showToast("لا يوجد انتقال فئة عمرية بانتظار الاعتماد لهذا اللاعب."); return; }
   const previousCategory = player.category;
+  const previousOverride = player.categoryOverride;
   player.category = nextCategory;
+  player.categoryOverride = false;
   if (saveData()) {
     renderView();
     showToast(`تم اعتماد انتقال ${player.name} إلى فئة ${nextCategory}.`);
   } else {
     player.category = previousCategory;
+    if (previousOverride === undefined) delete player.categoryOverride;
+    else player.categoryOverride = previousOverride;
+  }
+}
+
+function openPlayerCategoryForm(playerId) {
+  if (currentUser?.role !== "coach") { showToast("تعديل مجموعة اللاعب متاح للمشرف فقط."); return; }
+  const player = data.users.find(user => user.id === playerId && user.role === "member");
+  if (!player) { showToast("لم يتم العثور على اللاعب."); return; }
+  const categories = AGE_CATEGORIES.filter(category => category !== "جميع الفئات العمرية");
+  const options = categories.map(category =>
+    `<option value="${escapeHtml(category)}" ${player.category === category ? "selected" : ""}>${escapeHtml(category)}</option>`
+  ).join("");
+  openModal(
+    `تعديل مجموعة ${player.name}`,
+    `<p class="modal-explainer">يمكن للمشرف وضع اللاعب في مجموعة تدريب مختلفة عن فئته المحسوبة من تاريخ ميلاده. العمر الحالي: ${playerAgeInYears(player) === null ? "غير محدد" : `${arabicDigits(playerAgeInYears(player))} سنوات`}.</p><label>مجموعة التدريب<select name="category" required>${options}</select></label>`,
+    "حفظ المجموعة",
+    form => savePlayerCategory(form, player.id),
+    "ملفات اللاعبين"
+  );
+}
+
+function savePlayerCategory(form, playerId) {
+  if (currentUser?.role !== "coach") throw new Error("تعديل مجموعة اللاعب متاح للمشرف فقط.");
+  const player = data.users.find(user => user.id === playerId && user.role === "member");
+  const category = normalizeAgeCategory(String(form.get("category") || ""));
+  if (!player) throw new Error("لم يتم العثور على اللاعب.");
+  if (!AGE_CATEGORIES.includes(category) || category === "جميع الفئات العمرية") throw new Error("اختر مجموعة عمرية صالحة.");
+  const previousCategory = player.category;
+  const previousOverride = player.categoryOverride;
+  player.category = category;
+  player.categoryOverride = category !== playerCategoryForBirthDate(player.birthDate);
+  if (saveData()) {
+    closeModal();
+    renderView();
+    showToast(`تم حفظ مجموعة ${player.name}: ${category}.`);
+  } else {
+    player.category = previousCategory;
+    if (previousOverride === undefined) delete player.categoryOverride;
+    else player.categoryOverride = previousOverride;
   }
 }
 
@@ -2705,9 +2761,9 @@ function coachPlayersView() {
     const legacyUsage = user.subscriptionOverride
       ? `<small class="table-subtext">تمارين قبل المنصة: ${arabicDigits(user.subscriptionOverride.attendedBeforePlatform || 0)}</small>`
       : "";
-    return `<tr data-coach-search-row data-search-code="${escapeHtml(user.playerCode || "")}" data-search-parent="${escapeHtml(guardian?.name || user.guardian || "")}"><td class="player-code">${escapeHtml(user.playerCode)}</td><td>${escapeHtml(user.name)}<small class="table-subtext">${escapeHtml(guardian?.name || user.guardian || "")}</small></td><td>${escapeHtml(user.birthDate || "—")}<br>${escapeHtml(genderLabel(user.gender))}<br>${escapeHtml(user.category)}${nextCategory ? `<small class="table-subtext">الفئة التالية: ${escapeHtml(nextCategory)}</small>` : ""}</td><td>${escapeHtml((user.weeklyDays || []).join("، ") || "لم يختر")}<br>${schedules || "لا توجد مجموعة مرشحة"}</td><td>${arabicDigits(totalPaid)} ج.م${walletBalance ? `<small class="table-subtext">رصيد دائن بالمحفظة: ${arabicDigits(walletBalance)} ج.م</small>` : ""}${cashPartial ? `<small class="table-subtext">دفع نقدًا ${arabicDigits(cashPartial)} ج.م · المتبقي ${arabicDigits(cashRemaining)} ج.م لإكمال الاشتراك</small>` : ""}${cashDebt ? `<small class="table-subtext">رصيد متبقٍ مستحق: ${arabicDigits(cashDebt)} ج.م</small>` : ""}</td><td>${latestPayment ? `${escapeHtml(paymentMethodLabel(latestPayment))} · ${escapeHtml(latestPayment.date || "—")} · ${escapeHtml(latestPayment.paidTime || "—")}` : "لا توجد دفعات مؤكدة"}</td><td>${user.subscriptionEnd ? egyptianDate.format(new Date(`${user.subscriptionEnd}T12:00:00`)) : "غير مفعّل"}<br><span class="subscription-badge ${state.className}">${state.label}</span><br>متبقي ${arabicDigits(user.sessionsLeft || 0)} تمرين${legacyUsage}</td><td>${nextCategory ? `<button class="small-action" data-action="approve-player-category" data-player="${escapeHtml(user.id)}">اعتماد ${escapeHtml(nextCategory)}</button>` : ""}<button class="small-action" data-action="subscription-override" data-player="${escapeHtml(user.id)}">تعديل إداري للاشتراك</button><button class="small-action" data-action="cash-payment" data-player="${escapeHtml(user.id)}" ${canRequestPayment(user) ? "" : "disabled"}>تسجيل دفع نقدي</button>${cashDebt ? `<button class="small-action" data-action="cash-debt-payment" data-player="${escapeHtml(user.id)}">تحصيل الرصيد المستحق</button>` : ""}${state.label === "منتهي" ? guardianWhatsApp(user, expiredMessage, "إشعار انتهاء الاشتراك") : ""}</td></tr>`;
+    return `<tr data-coach-search-row data-search-code="${escapeHtml(user.playerCode || "")}" data-search-parent="${escapeHtml(guardian?.name || user.guardian || "")}"><td class="player-code">${escapeHtml(user.playerCode)}</td><td>${escapeHtml(user.name)}<small class="table-subtext">${escapeHtml(guardian?.name || user.guardian || "")}</small></td><td>${escapeHtml(user.birthDate || "—")}<br>${escapeHtml(genderLabel(user.gender))}<br>${escapeHtml(user.category)}${user.categoryOverride ? `<small class="table-subtext">تعديل يدوي من المشرف</small>` : ""}${nextCategory ? `<small class="table-subtext">الفئة التالية: ${escapeHtml(nextCategory)}</small>` : ""}</td><td>${escapeHtml((user.weeklyDays || []).join("، ") || "لم يختر")}<br>${schedules || "لا توجد مجموعة مرشحة"}</td><td>${arabicDigits(totalPaid)} ج.م${walletBalance ? `<small class="table-subtext">رصيد دائن بالمحفظة: ${arabicDigits(walletBalance)} ج.م</small>` : ""}${cashPartial ? `<small class="table-subtext">دفع نقدًا ${arabicDigits(cashPartial)} ج.م · المتبقي ${arabicDigits(cashRemaining)} ج.م لإكمال الاشتراك</small>` : ""}${cashDebt ? `<small class="table-subtext">رصيد متبقٍ مستحق: ${arabicDigits(cashDebt)} ج.م</small>` : ""}</td><td>${latestPayment ? `${escapeHtml(paymentMethodLabel(latestPayment))} · ${escapeHtml(latestPayment.date || "—")} · ${escapeHtml(latestPayment.paidTime || "—")}` : "لا توجد دفعات مؤكدة"}</td><td>${user.subscriptionEnd ? egyptianDate.format(new Date(`${user.subscriptionEnd}T12:00:00`)) : "غير مفعّل"}<br><span class="subscription-badge ${state.className}">${state.label}</span><br>متبقي ${arabicDigits(user.sessionsLeft || 0)} تمرين${legacyUsage}</td><td><button class="small-action" data-action="edit-player-category" data-player="${escapeHtml(user.id)}">تعديل المجموعة</button>${nextCategory ? `<button class="small-action" data-action="approve-player-category" data-player="${escapeHtml(user.id)}">اعتماد ${escapeHtml(nextCategory)}</button>` : ""}<button class="small-action" data-action="subscription-override" data-player="${escapeHtml(user.id)}">تعديل إداري للاشتراك</button><button class="small-action" data-action="cash-payment" data-player="${escapeHtml(user.id)}" ${canRequestPayment(user) ? "" : "disabled"}>تسجيل دفع نقدي</button>${cashDebt ? `<button class="small-action" data-action="cash-debt-payment" data-player="${escapeHtml(user.id)}">تحصيل الرصيد المستحق</button>` : ""}${state.label === "منتهي" ? guardianWhatsApp(user, expiredMessage, "إشعار انتهاء الاشتراك") : ""}</td></tr>`;
   }).join("");
-  return `<section class="page-intro coach-players-intro"><div><p class="eyebrow">متابعة الحسابات والاشتراكات</p><h1>أولياء الأمور واللاعبون</h1><p class="welcome-subtitle">تظهر بيانات اللاعب ونوعه وتاريخ ميلاده وفئته ومواعيده. تغيّر الفئة عند بلوغ الحد ينتظر موافقة المشرف.</p></div><label class="coach-player-search"><span aria-hidden="true">⌕</span><input id="coach-player-search" type="search" autocomplete="off" placeholder="ابحث باسم ولي الأمر أو كود اللاعب" aria-label="ابحث باسم ولي الأمر أو كود اللاعب"></label></section><section class="panel"><div class="panel-heading"><div><h2>حسابات أولياء الأمور</h2><p>${arabicDigits(guardians.length)} ولي أمر · الحذف يزيل ولي الأمر وأطفاله فقط، وتبقى السجلات المالية محفوظة.</p></div></div>${guardians.length ? `<div class="table-wrap"><table><thead><tr><th>ولي الأمر</th><th>الهاتف / واتساب</th><th>البريد الإلكتروني</th><th>اللاعبون</th><th>إجراء الحساب</th></tr></thead><tbody>${guardianRows}<tr data-search-empty hidden><td colspan="5">لا توجد نتائج مطابقة.</td></tr></tbody></table></div>` : '<div class="empty-state"><p>لا توجد حسابات أولياء أمور بعد.</p></div>'}</section><section class="panel"><div class="panel-heading"><div><h2>سجل اللاعبين والاشتراكات</h2><p>كل الدفعات تبقى مسجلة ولا يمكن حذفها من سجل الدفع.</p></div></div>${users.length ? `<div class="table-wrap"><table><thead><tr><th>كود اللاعب</th><th>اللاعب / ولي الأمر</th><th>النوع وتاريخ الميلاد والفئة</th><th>أيام التدريب والمواعيد</th><th>إجمالي ما دفع</th><th>آخر دفعة: الطريقة والتاريخ والوقت</th><th>الانتهاء والحالة</th><th>إجراء</th></tr></thead><tbody>${playerRows}<tr data-search-empty hidden><td colspan="8">لا توجد نتائج مطابقة.</td></tr></tbody></table></div>` : '<div class="empty-state"><p>لا يوجد لاعبون مسجلون بعد.</p></div>'}</section>${coachAdministrativeAbsencesView()}`;
+  return `<section class="page-intro coach-players-intro"><div><p class="eyebrow">متابعة الحسابات والاشتراكات</p><h1>أولياء الأمور واللاعبون</h1><p class="welcome-subtitle">تظهر بيانات اللاعب ونوعه وتاريخ ميلاده وفئته ومواعيده. الفئة التلقائية عند بلوغ الحد تنتظر موافقة المشرف، ويمكن للمشرف تعديل المجموعة يدويًا.</p></div><label class="coach-player-search"><span aria-hidden="true">⌕</span><input id="coach-player-search" type="search" autocomplete="off" placeholder="ابحث باسم ولي الأمر أو كود اللاعب" aria-label="ابحث باسم ولي الأمر أو كود اللاعب"></label></section><section class="panel"><div class="panel-heading"><div><h2>حسابات أولياء الأمور</h2><p>${arabicDigits(guardians.length)} ولي أمر · الحذف يزيل ولي الأمر وأطفاله فقط، وتبقى السجلات المالية محفوظة.</p></div></div>${guardians.length ? `<div class="table-wrap"><table><thead><tr><th>ولي الأمر</th><th>الهاتف / واتساب</th><th>البريد الإلكتروني</th><th>اللاعبون</th><th>إجراء الحساب</th></tr></thead><tbody>${guardianRows}<tr data-search-empty hidden><td colspan="5">لا توجد نتائج مطابقة.</td></tr></tbody></table></div>` : '<div class="empty-state"><p>لا توجد حسابات أولياء أمور بعد.</p></div>'}</section><section class="panel"><div class="panel-heading"><div><h2>سجل اللاعبين والاشتراكات</h2><p>كل الدفعات تبقى مسجلة ولا يمكن حذفها من سجل الدفع.</p></div></div>${users.length ? `<div class="table-wrap"><table><thead><tr><th>كود اللاعب</th><th>اللاعب / ولي الأمر</th><th>النوع وتاريخ الميلاد والفئة</th><th>أيام التدريب والمواعيد</th><th>إجمالي ما دفع</th><th>آخر دفعة: الطريقة والتاريخ والوقت</th><th>الانتهاء والحالة</th><th>إجراء</th></tr></thead><tbody>${playerRows}<tr data-search-empty hidden><td colspan="8">لا توجد نتائج مطابقة.</td></tr></tbody></table></div>` : '<div class="empty-state"><p>لا يوجد لاعبون مسجلون بعد.</p></div>'}</section>${coachAdministrativeAbsencesView()}`;
 }
 
 function playerAgeInYears(player) {
@@ -2853,7 +2909,7 @@ function legacyPlayerDetailsView(player) {
     `<tr><td>${escapeHtml(legacyChangeTimestamp(entry.changedAt))}</td><td>${escapeHtml(entry.title)}</td><td>${escapeHtml(entry.before)}</td><td>${escapeHtml(entry.after)}</td></tr>`
   ).join("") : '<tr><td colspan="4">لا توجد تعديلات إدارية محفوظة بعد.</td></tr>';
   return `<section class="panel legacy-player-details">
-    <header class="legacy-player-heading"><div><p class="eyebrow">ملف لاعب قائم</p><h2>${escapeHtml(player.name)}</h2><p>كود الحضور: <strong>${escapeHtml(player.playerCode || "—")}</strong> · العمر: ${age === null ? "غير معروف" : `${arabicDigits(age)} سنة`}</p></div></header>
+    <header class="legacy-player-heading"><div><p class="eyebrow">ملف لاعب قائم</p><h2>${escapeHtml(player.name)}</h2><p>كود الحضور: <strong>${escapeHtml(player.playerCode || "—")}</strong> · العمر: ${age === null ? "غير معروف" : `${arabicDigits(age)} سنة`} · المجموعة: ${escapeHtml(player.category || "غير محددة")}${player.categoryOverride ? " · تعديل يدوي" : ""}</p></div><button type="button" class="small-action" data-action="edit-player-category" data-player="${escapeHtml(player.id)}">تعديل مجموعة التدريب</button></header>
     <div class="member-stats legacy-player-stats">
       <article class="member-stat"><p>أيام التدريب المحددة</p><strong>${escapeHtml((player.weeklyDays || []).join("، ") || "غير محددة")}</strong></article>
       <article class="member-stat"><p>حضور محسوب / غياب</p><strong>${arabicDigits(balance.used)} / ${arabicDigits(attendance.filter(record => record.status === "غائب").length)}</strong></article>
@@ -4714,7 +4770,7 @@ document.addEventListener("click", async event => {
     renderView();
     return;
   }
-  if (["new-session", "edit-session", "delete-session", "take-attendance", "day-off", "code-attendance", "cash-payment", "cash-debt-payment", "new-trainer", "mark-trainer-attendance", "new-expense", "new-revenue", "instapay-settings", "confirm-payment", "reject-payment", "receipt-preview", "approve-makeup", "reject-makeup", "approve-player-category", "delete-expense", "delete-revenue", "delete-guardian", "record-administrative-absence"].includes(action.dataset.action) && currentUser.role !== "coach") {
+  if (["new-session", "edit-session", "delete-session", "take-attendance", "day-off", "code-attendance", "cash-payment", "cash-debt-payment", "new-trainer", "mark-trainer-attendance", "new-expense", "new-revenue", "instapay-settings", "confirm-payment", "reject-payment", "receipt-preview", "approve-makeup", "reject-makeup", "approve-player-category", "edit-player-category", "delete-expense", "delete-revenue", "delete-guardian", "record-administrative-absence"].includes(action.dataset.action) && currentUser.role !== "coach") {
     showToast("هذا الإجراء متاح لمشرف الأكاديمية فقط.");
     return;
   }
@@ -4751,6 +4807,7 @@ document.addEventListener("click", async event => {
   if (action.dataset.action === "cash-payment") recordCashPayment(action.dataset.player);
   if (action.dataset.action === "cash-debt-payment") recordCashDebtPayment(action.dataset.player);
   if (action.dataset.action === "approve-player-category") approvePlayerCategory(action.dataset.player);
+  if (action.dataset.action === "edit-player-category") openPlayerCategoryForm(action.dataset.player);
   if (action.dataset.action === "subscription-override") openSubscriptionOverride(action.dataset.player);
   if (action.dataset.action === "record-administrative-absence") {
     if (currentUser?.role !== "coach") { showToast("تسجيل الغياب الإداري متاح للمشرف فقط."); return; }
@@ -4951,6 +5008,7 @@ byId("modal-close").addEventListener("click", closeModal);
 byId("action-modal").addEventListener("click", event => { if (event.target === byId("action-modal")) closeModal(); });
 byId("portal-menu").addEventListener("click", () => byId("portal-sidebar").classList.toggle("open"));
 async function logOut() {
+  authFlowInProgress = true;
   try {
     await cloudWriteQueue;
     const firebase = await window.firebaseReady;
@@ -4963,6 +5021,8 @@ async function logOut() {
   } catch (error) {
     console.error("تعذر تسجيل الخروج من Firebase Authentication.", error);
     showToast("تعذر تسجيل الخروج. حاول مرة أخرى.");
+  } finally {
+    authFlowInProgress = false;
   }
 }
 
@@ -4976,21 +5036,36 @@ function observeFirebaseAuth() {
   window.firebaseReady = window.loadFirebase();
   window.firebaseReady.then(firebase => {
     firebase.observeAuth(async user => {
-      if (authFlowInProgress || currentUser) return;
+      if (authFlowInProgress) return;
       if (!user) {
         initialAuthResolved = true;
+        if (currentUser) {
+          cloudProfile = null;
+          currentUser = null;
+          appUserReady = false;
+          selectedPlayerId = null;
+          showAuth();
+          showToast("انتهت جلسة هذا الجهاز أو تم استبدالها. سجّل الدخول مجددًا.");
+          return;
+        }
         showAuth();
         return;
       }
+      if (currentUser) return;
       try {
         const profile = await firebase.currentProfile(user);
         if (!profile) {
           initialAuthResolved = true;
+          const { claims } = await user.getIdTokenResult();
           await firebase.signOut();
           showAuth();
-          showToast(user.isAnonymous
-            ? "تعذر استعادة جلسة اللاعب. سجّل الدخول مجددًا باستخدام كود الحضور."
-            : "هذا البريد غير مسجل بدور في الأكاديمية. تواصل مع المشرف.");
+          showToast(claims.playerSession === true
+            ? "انتهت جلسة اللاعب أو تم استبدال الجهاز. سجّل الدخول مجددًا بكود اللاعب."
+            : typeof claims.guardianSessionId === "string"
+              ? "انتهت جلسة ولي الأمر على هذا الجهاز. سجّل الدخول مجددًا."
+              : user.isAnonymous
+                ? "تعذر استعادة جلسة اللاعب. سجّل الدخول مجددًا باستخدام كود الحضور."
+                : "هذا البريد غير مسجل بدور في الأكاديمية. تواصل مع المشرف.");
           return;
         }
         await activateCloudProfile(profile);

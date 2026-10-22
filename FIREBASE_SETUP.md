@@ -31,11 +31,16 @@ firebase.cmd emulators:start --project demo-alittihad-academy --only auth,firest
 ## إعداد لوحة Firebase
 
 1. افتح مشروع `al-attihad-academy-68905` في Firebase Console.
-2. من **Authentication → Sign-in method** فعّل **Email/Password** و**Anonymous**. الدخول المجهول مستخدم لملفات اللاعبين التي لا تملك بريدًا؛ تسجيل الدخول بكود اللاعب لن يعمل دون تفعيل Anonymous.
+2. من **Authentication → Sign-in method** فعّل **Email/Password** و**Anonymous**. يستخدم التطبيق Anonymous مؤقتًا لبدء تسجيل دخول اللاعب؛ لا يملك المستخدم المجهول صلاحية قراءة ملفات اللاعبين أو إنشاء جلسة بنفسه.
 3. أنشئ قاعدة Firestore الافتراضية.
-4. انشر قواعد الوصول الموجودة في `firestore.rules` من تبويب Firestore Rules، أو شغّل `firebase deploy --project al-attihad-academy-68905 --only firestore:rules` بعد تسجيل الدخول إلى Firebase CLI. لا يحتاج تدفق الاشتراك الحالي إلى إنشاء Firebase Storage أو نشر قواعد Storage.
-5. انشر وظائف Firebase عبر `firebase deploy --project al-attihad-academy-68905 --only functions`. تتحقق وظائف طلب اللاعب من الجلسة والباقة والسعر ورصيد المحفظة وخصم الإخوة، وتنشئ حجز مرجع التحويل وقفل الطلب والطلبين ذريًا؛ كما تحرر القفل عند مراجعة الطلب. لا تسمح قواعد Firestore بإنشاء اللاعب لهذه السجلات مباشرةً.
-6. أضف نطاق النشر إلى **Authentication → Settings → Authorized domains**، وشغّل الموقع من نطاق HTTPS أو localhost، وليس بفتحه كملف `file://`.
+4. من **App Check** سجّل تطبيق الويب باستخدام reCAPTCHA v3، وأضف نطاق الموقع إلى قائمة النطاقات المسموح بها. انسخ Site Key العام إلى `FIREBASE_APPCHECK_SITE_KEY` في `firebase.js`. لا تترك القيمة فارغة في نشر الإنتاج: وظائف تسجيل دخول اللاعب بالكود وجلسة ولي الأمر ترفض الطلبات التي لا تحمل App Check صالحًا.
+5. انشر قواعد الوصول الموجودة في `firestore.rules` من تبويب Firestore Rules، أو شغّل `firebase.cmd deploy --project al-attihad-academy-68905 --only firestore:rules` بعد تسجيل الدخول إلى Firebase CLI. لا يحتاج تدفق الاشتراك الحالي إلى إنشاء Firebase Storage أو نشر قواعد Storage.
+6. انشر وظائف Firebase عبر `firebase.cmd deploy --project al-attihad-academy-68905 --only functions`. تتحقق الوظائف من تسجيل دخول اللاعب بالكود على الخادم، وتحدّ من محاولات الدخول، وتستبدل جلسة اللاعب السابقة عند دخوله من جهاز آخر. تحتفظ جلسات ولي الأمر بحد جهازين؛ تسجيل جهاز ثالث ينهي أقدم جلسة. تُنشأ الجلسات وتُلغى من الخادم، ولا تسمح قواعد Firestore للعميل بإنشاء أو تعديل مستندات الجلسات.
+7. انشر الموقع بعد إعداد App Check ونشر القواعد والوظائف. أضف نطاق النشر إلى **Authentication → Settings → Authorized domains**، وشغّل الموقع من نطاق HTTPS أو localhost، وليس بفتحه كملف `file://`.
+
+تُعرّف أجهزة المتصفح بمعرّف عشوائي محفوظ محليًا؛ لذلك تمثل الحدود جلستين في متصفحين/ملفي متصفح، وليست إثباتًا ماديًا لهوية الجهاز. مسح بيانات المتصفح ينشئ معرّفًا جديدًا، وعند امتلاء الحد يستبدل الخادم أقدم جلسة وفق سياسة الحساب.
+
+تغيير قواعد الجلسات يتطلب نشرًا منسقًا للقواعد والوظائف والواجهة. أثناء الترحيل، أوقف استخدام المنصة مؤقتًا، وانشر وظائف Firebase ثم القواعد ثم الواجهة الجديدة، ثم اطلب من أولياء الأمور واللاعبين تسجيل الدخول مجددًا. لا تُعد فتح الخدمة قبل ضبط Site Key والتحقق من تدفق الدخول في مشروع اختبار؛ فالقواعد الجديدة تمنع عمدًا طريقة إنشاء جلسة اللاعب القديمة من العميل.
 
 ## إنشاء أول حساب للمشرف
 
@@ -69,7 +74,7 @@ firebase.cmd emulators:start --project demo-alittihad-academy --only auth,firest
 ## أماكن حفظ البيانات
 
 - `users`: ملفات أولياء الأمور والمدربين والمشرف.
-- `players` و`playerCodes` و`playerSessions`: ملفات اللاعبين وأكوادهم وربط جلسات دخول اللاعب المجهول.
+- `players` و`playerCodes` و`playerSessions`: ملفات اللاعبين وأكوادهم وجلسة اللاعب النشطة التي تنشئها وظائف Firebase. تحفظ `users/{uid}/deviceSessions` جلسات أجهزة ولي الأمر.
 - `sessions` و`settings`: المواعيد وأيام العمل والأسعار وبيانات التحويل.
 - `attendance` و`attendanceExceptions` و`trainerAttendance`: الحضور والغياب وطلبات التعويض وحضور المدربين.
 - `subscriptions`: طلب الاشتراك؛ يحتوي بيانات اللاعب ورقم التحويل وتاريخ البداية المتوقع ووقت الإرسال.

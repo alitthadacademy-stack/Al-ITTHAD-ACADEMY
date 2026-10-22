@@ -5,12 +5,14 @@ import {
   connectAuthEmulator,
   deleteUser,
   getAuth,
-  onAuthStateChanged,
+  onIdTokenChanged,
   signInAnonymously,
+  signInWithCustomToken,
   signInWithEmailAndPassword,
   signOut,
   updateProfile
 } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-auth.js";
+import { initializeAppCheck, ReCaptchaV3Provider } from "https://www.gstatic.com/firebasejs/12.4.0/firebase-app-check.js";
 import {
   addDoc,
   collection,
@@ -47,6 +49,8 @@ const firebaseConfig = {
 };
 const COACH_EMAIL = "al.itthad.academy@gmail.com";
 const FIREBASE_WEB_PUSH_VAPID_KEY = "BG_n4zEwQIE8kkSM-H-bUp5smvv9SIdo9tzZ8NFbxAoYJRHBRBjFLqMfN4GJ_M1Bly9x2X1alwPM96mynMc6620";
+const FIREBASE_APPCHECK_SITE_KEY = "6LdKV_stAAAAAISGKewc6xy9x-bY1CILrl9yECS-";
+const DEVICE_SESSION_STORAGE_KEY = "alEtihadAcademy.deviceSession.v1";
 
 const useFirebaseEmulators = ["localhost", "127.0.0.1"].includes(window.location.hostname)
   && new URLSearchParams(window.location.search).get("emulator") === "1";
@@ -56,12 +60,53 @@ const app = initializeApp(useFirebaseEmulators
 const auth = getAuth(app);
 const db = getFirestore(app);
 const functions = getFunctions(app);
+if (!useFirebaseEmulators && FIREBASE_APPCHECK_SITE_KEY) {
+  initializeAppCheck(app, {
+    provider: new ReCaptchaV3Provider(FIREBASE_APPCHECK_SITE_KEY),
+    isTokenAutoRefreshEnabled: true
+  });
+}
 if (useFirebaseEmulators) {
   connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
   connectFirestoreEmulator(db, "127.0.0.1", 8080);
   connectFunctionsEmulator(functions, "127.0.0.1", 5001);
 }
 let foregroundMessageUnsubscribe = null;
+let activeSessionUnsubscribe = null;
+
+function requireAppCheckConfiguration() {
+  if (!useFirebaseEmulators && !FIREBASE_APPCHECK_SITE_KEY) {
+    throw new Error("يلزم إعداد مفتاح Firebase App Check للموقع قبل تسجيل الدخول. أضف مفتاح reCAPTCHA v3 في firebase.js ثم أعد النشر.");
+  }
+}
+
+function currentDeviceSessionId() {
+  let deviceId = localStorage.getItem(DEVICE_SESSION_STORAGE_KEY);
+  if (!deviceId) {
+    deviceId = crypto.randomUUID();
+    localStorage.setItem(DEVICE_SESSION_STORAGE_KEY, deviceId);
+  }
+  return deviceId;
+}
+
+async function openGuardianDeviceSession() {
+  requireAppCheckConfiguration();
+  const result = await httpsCallable(functions, "openGuardianDeviceSession")({
+    deviceId: currentDeviceSessionId()
+  });
+  await signInWithCustomToken(auth, result.data.token);
+}
+
+async function closeActiveDeviceSession() {
+  const user = auth.currentUser;
+  if (!user) return;
+  const { claims } = await user.getIdTokenResult();
+  if (typeof claims.guardianSessionId === "string") {
+    await httpsCallable(functions, "closeGuardianDeviceSession")({});
+  } else if (claims.playerSession === true) {
+    await httpsCallable(functions, "closePlayerSession")({});
+  }
+}
 
 async function notificationTokenDocumentId(ownerUid, token) {
   const bytes = new TextEncoder().encode(token);
@@ -223,14 +268,19 @@ function playerForFirestore(player) {
   return safePlayer;
 }
 
+function normalizeAgeCategory(category) {
+  return category === "أطفال حتى ٦ سنوات" ? "أطفال حتى ٧ سنوات" : category;
+}
+
 function sessionAllowsPlayer(session, player) {
   const categories = Array.isArray(session.categories) && session.categories.length
-    ? session.categories
-    : [session.category];
+    ? session.categories.map(normalizeAgeCategory)
+    : [normalizeAgeCategory(session.category)];
+  const playerCategory = normalizeAgeCategory(player.category);
   const categoryMatches = categories.includes("جميع الفئات العمرية")
-    || categories.includes(player.category)
-    || !player.category
-    || player.category === "جميع الفئات العمرية";
+    || categories.includes(playerCategory)
+    || !playerCategory
+    || playerCategory === "جميع الفئات العمرية";
   const genderMatches = !["male", "female"].includes(session.gender)
     || !["male", "female"].includes(player.gender)
     || session.gender === player.gender;
@@ -367,6 +417,7 @@ function applyRecords(state, name, records, profile) {
   state[field].push(...records.map(record => {
     const { __docId, ...appRecord } = record;
     if (name === "players") {
+      appRecord.category = normalizeAgeCategory(appRecord.category);
       appRecord.expectedStartDate ||= appRecord.subscriptionStart || null;
       appRecord.actualStartDate ||= appRecord.subscriptionStart || null;
       appRecord.endDate ||= appRecord.subscriptionEnd || null;
@@ -376,6 +427,12 @@ function applyRecords(state, name, records, profile) {
       appRecord.guardian = guardian?.name || "";
       appRecord.guardianPhone ||= guardian?.guardianPhone || "";
       appRecord.whatsappPhone ||= guardian?.whatsappPhone || appRecord.guardianPhone;
+    } else if (name === "sessions") {
+      const categories = Array.isArray(appRecord.categories)
+        ? appRecord.categories.map(normalizeAgeCategory)
+        : [];
+      appRecord.categories = categories;
+      appRecord.category = normalizeAgeCategory(appRecord.category);
     }
     return appRecord;
   }));
@@ -419,9 +476,37 @@ function academyServices() {
   return {
     auth,
     observeAuth(callback) {
-      return onAuthStateChanged(auth, callback);
+      return onIdTokenChanged(auth, async user => {
+        activeSessionUnsubscribe?.();
+        activeSessionUnsubscribe = null;
+        if (user) {
+          try {
+            const { claims } = await user.getIdTokenResult();
+            let sessionRef = null;
+            if (typeof claims.guardianSessionId === "string") {
+              sessionRef = doc(db, "users", user.uid, "deviceSessions", claims.guardianSessionId);
+            } else if (claims.playerSession === true) {
+              sessionRef = doc(db, "playerSessions", user.uid);
+            }
+            if (sessionRef) {
+              activeSessionUnsubscribe = onSnapshot(sessionRef, snapshot => {
+                if (!snapshot.exists() || snapshot.data().active !== true) {
+                  signOut(auth).catch(error => console.error("تعذر إنهاء جلسة جهاز تم استبدالها.", error));
+                }
+              }, error => {
+                console.error("تعذر التحقق من صلاحية جلسة هذا الجهاز.", error);
+                signOut(auth).catch(signOutError => console.error("تعذر إنهاء جلسة جهاز غير صالحة.", signOutError));
+              });
+            }
+          } catch (error) {
+            console.error("تعذر تحميل بيانات جلسة الجهاز.", error);
+          }
+        }
+        callback(user);
+      });
     },
     async registerGuardian(guardian, players) {
+      requireAppCheckConfiguration();
       const credential = await createUserWithEmailAndPassword(auth, guardian.email.trim(), guardian.password);
       try {
         await updateProfile(credential.user, { displayName: guardian.name });
@@ -454,12 +539,18 @@ function academyServices() {
           });
           baseline.set(`users/${credential.user.uid}`, baselineValue("users", guardianProfile));
         });
+        await openGuardianDeviceSession();
         return { profile: guardianProfile, players: registeredPlayers };
       } catch (error) {
-        try {
-          await deleteUser(credential.user);
-        } catch (cleanupError) {
-          console.error("تعذر تنظيف حساب Authentication بعد فشل التسجيل.", cleanupError);
+        const profileSnapshot = await getDoc(doc(db, "users", credential.user.uid)).catch(() => null);
+        if (!profileSnapshot?.exists()) {
+          try {
+            await deleteUser(credential.user);
+          } catch (cleanupError) {
+            console.error("تعذر تنظيف حساب Authentication بعد فشل التسجيل.", cleanupError);
+          }
+        } else {
+          await signOut(auth);
         }
         throw error;
       }
@@ -470,6 +561,15 @@ function academyServices() {
       if (!profile) {
         await signOut(auth);
         throw new Error("هذا البريد لم تتم إضافته إلى الأكاديمية. تواصل مع المشرف.");
+      }
+      if (profile.role === "guardian") {
+        try {
+          requireAppCheckConfiguration();
+          await openGuardianDeviceSession();
+        } catch (error) {
+          await signOut(auth);
+          throw error;
+        }
       }
       return profile;
     },
@@ -495,20 +595,39 @@ function academyServices() {
     },
     async signInWithPlayerCode(code) {
       try {
+        requireAppCheckConfiguration();
+        if (auth.currentUser) {
+          try {
+            await closeActiveDeviceSession();
+          } catch (closeError) {
+            console.error("تعذر تحرير الجلسة السابقة قبل دخول اللاعب.", closeError);
+          }
+          await signOut(auth);
+        }
         const credential = await signInAnonymously(auth);
-        const codeSnapshot = await getDoc(playerCodeRef(code));
-        if (!codeSnapshot.exists()) throw new Error("كود اللاعب غير صحيح.");
-        await setDoc(doc(db, "playerSessions", credential.user.uid), { playerCode: code, createdAt: serverTimestamp() });
-        const playerSnapshot = await getDoc(doc(db, "players", code));
-        if (!playerSnapshot.exists()) throw new Error("لم يتم العثور على بيانات اللاعب.");
-        return { ...playerSnapshot.data(), id: playerSnapshot.data().id || playerSnapshot.id, role: "member", authUid: credential.user.uid };
+        const result = await httpsCallable(functions, "loginPlayerWithCode")({ code });
+        await signInWithCustomToken(auth, result.data.token);
+        const codeSnapshot = await getDoc(doc(db, "players", code));
+        if (!codeSnapshot.exists()) throw new Error("لم يتم العثور على بيانات اللاعب.");
+        const player = codeSnapshot.data();
+        if (player.activePlayerSessionUid !== auth.currentUser?.uid) {
+          throw new Error("تم تسجيل دخول اللاعب من جهاز آخر. أعد تسجيل الدخول بهذا الجهاز.");
+        }
+        return { ...player, id: player.id || code, role: "member", authUid: credential.user.uid };
       } catch (error) {
-        if (auth.currentUser?.isAnonymous) await signOut(auth);
+        if (auth.currentUser) {
+          try {
+            await closeActiveDeviceSession();
+          } catch (closeError) {
+            console.error("تعذر تحرير جلسة اللاعب بعد فشل الدخول.", closeError);
+          }
+          await signOut(auth);
+        }
         if (error?.code === "auth/configuration-not-found" || error?.code === "auth/operation-not-allowed") {
           throw new Error("دخول اللاعبين يحتاج إلى تفعيل Firebase Authentication → Sign-in method → Anonymous في مشروع الأكاديمية.");
         }
         if (error?.code === "permission-denied") {
-          throw new Error("تعذر الوصول إلى كود اللاعب. تأكد من نشر firestore.rules وأن الكود تابع للاعب مسجل في Firestore.");
+          throw new Error("تعذر التحقق من جلسة اللاعب. تأكد من نشر وظائف Firebase وقواعد Firestore المحدّثة.");
         }
         throw error;
       }
@@ -550,18 +669,42 @@ function academyServices() {
       return player;
     },
     async currentProfile(user) {
-      if (user.isAnonymous) {
-        const session = await getDoc(doc(db, "playerSessions", user.uid));
-        if (!session.exists()) return null;
+      const { claims } = await user.getIdTokenResult();
+      if (claims.playerSession === true) {
+        let session;
+        try {
+          session = await getDoc(doc(db, "playerSessions", user.uid));
+        } catch (error) {
+          if (error?.code === "permission-denied") return null;
+          throw error;
+        }
+        if (!session.exists() || session.data().active !== true) return null;
         const code = session.data().playerCode;
         const player = await getDoc(doc(db, "players", code));
-        if (!player.exists()) return null;
+        if (!player.exists() || player.data().activePlayerSessionUid !== user.uid) return null;
         return { ...player.data(), id: player.data().id || player.id, role: "member", authUid: user.uid };
       }
-      return getProfile(user);
+      if (typeof claims.guardianSessionId === "string") {
+        let session;
+        try {
+          session = await getDoc(doc(db, "users", user.uid, "deviceSessions", claims.guardianSessionId));
+        } catch (error) {
+          if (error?.code === "permission-denied") return null;
+          throw error;
+        }
+        if (!session.exists() || session.data().active !== true) return null;
+      }
+      const profile = await getProfile(user);
+      if (profile?.role === "guardian" && typeof claims.guardianSessionId !== "string") return null;
+      return profile;
     },
     async signOut() {
       stopWatching();
+      try {
+        await closeActiveDeviceSession();
+      } catch (error) {
+        console.error("تعذر إبطال جلسة الجهاز قبل تسجيل الخروج؛ ستنتهي صلاحيتها عند استبدالها.", error);
+      }
       await signOut(auth);
     },
     async getGuardianReport(guardianId) {

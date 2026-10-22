@@ -18,12 +18,16 @@ service cloud.firestore {
     function isGuardian() {
       return signedIn()
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-        && userProfile(request.auth.uid).role == 'guardian';
+        && userProfile(request.auth.uid).role == 'guardian'
+        && request.auth.token.guardianSessionId is string
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid)/deviceSessions/$(request.auth.token.guardianSessionId))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)/deviceSessions/$(request.auth.token.guardianSessionId)).data.active == true;
     }
 
     function isGuardianWithProfileInRequest() {
       return isGuardian()
         || (signedIn()
+          && !exists(/databases/$(database)/documents/users/$(request.auth.uid))
           && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
           && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'guardian');
     }
@@ -36,12 +40,17 @@ service cloud.firestore {
 
     function isMember() {
       return signedIn()
-        && request.auth.token.firebase.sign_in_provider == 'anonymous'
-        && exists(/databases/$(database)/documents/playerSessions/$(request.auth.uid));
+        && request.auth.token.playerSession == true
+        && request.auth.token.playerCode is string
+        && exists(/databases/$(database)/documents/playerSessions/$(request.auth.uid))
+        && get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.active == true
+        && get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode == request.auth.token.playerCode
+        && exists(/databases/$(database)/documents/players/$(request.auth.token.playerCode))
+        && get(/databases/$(database)/documents/players/$(request.auth.token.playerCode)).data.activePlayerSessionUid == request.auth.uid;
     }
 
     function memberPlayerId() {
-      return get(/databases/$(database)/documents/players/$(get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode)).data.id;
+      return get(/databases/$(database)/documents/players/$(request.auth.token.playerCode)).data.id;
     }
 
     function invitedTrainer(uid) {
@@ -79,6 +88,14 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys()
             .hasOnly(['name', 'guardianPhone', 'whatsappPhone', 'updatedAt']));
       allow delete: if isCoach();
+
+      match /deviceSessions/{sessionId} {
+        allow get: if signedIn()
+          && request.auth.uid == uid
+          && request.auth.token.guardianSessionId == sessionId
+          && resource.data.active == true;
+        allow list, create, update, delete: if false;
+      }
     }
 
     match /players/{playerCode} {
@@ -128,7 +145,7 @@ service cloud.firestore {
 
     match /playerCodes/{code} {
       allow get: if signedIn()
-        && (request.auth.token.firebase.sign_in_provider == 'anonymous' || isGuardian() || isCoach());
+        && (isGuardian() || isCoach());
       allow list: if isCoach();
       allow create: if isGuardianWithProfileInRequest()
         && existsAfter(/databases/$(database)/documents/players/$(code))
@@ -424,12 +441,14 @@ service cloud.firestore {
     }
 
     match /playerSessions/{uid} {
-      allow read: if signedIn() && request.auth.uid == uid;
-      allow create: if signedIn()
+      allow get: if signedIn()
         && request.auth.uid == uid
-        && request.auth.token.firebase.sign_in_provider == 'anonymous'
-        && exists(/databases/$(database)/documents/playerCodes/$(request.resource.data.playerCode));
-      allow update, delete: if false;
+        && request.auth.token.playerSession == true
+        && resource.data.active == true
+        && resource.data.playerCode == request.auth.token.playerCode
+        && exists(/databases/$(database)/documents/players/$(resource.data.playerCode))
+        && get(/databases/$(database)/documents/players/$(resource.data.playerCode)).data.activePlayerSessionUid == uid;
+      allow list, create, update, delete: if false;
     }
   }
 }
