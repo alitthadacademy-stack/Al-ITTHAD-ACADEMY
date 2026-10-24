@@ -237,6 +237,18 @@ a { color: inherit; text-decoration: none; }
 .supervisor-update-list strong { color: #34483b; font-size: 12px; }
 .supervisor-update-list span { color: #526157; font-size: 11px; line-height: 1.7; }
 .legacy-player-note,.legacy-player-form .form-note { line-height: 1.8; }
+.trainer-payroll-panel { margin-bottom: 16px; }
+.trainer-payroll-panel .form-note { margin: 0 0 12px; line-height: 1.8; }
+.trainer-payroll-panel .small-action:disabled { cursor: not-allowed; opacity: .5; }
+.player-code-directory { max-width: 760px; }
+.player-code-directory-search { display: grid; gap: 7px; margin: 14px 0; color: #526157; font-size: 11px; font-weight: 700; }
+.player-code-directory-search input { width: 100%; min-height: 42px; padding: 10px 12px; border: 1px solid #e4eae5; border-radius: 9px; background: #fff; color: #34423a; font: inherit; font-weight: 400; }
+.player-code-directory-search input:focus { outline: 0; border-color: #48a77f; box-shadow: 0 0 0 3px #e6f4eb; }
+.player-code-directory-list { display: grid; gap: 8px; }
+.player-code-directory-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid #e7ece8; border-radius: 9px; background: #fff; }
+.player-code-directory-item strong { overflow: hidden; color: #34483b; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.player-code-directory-item span { flex: 0 0 auto; color: #087b59; direction: ltr; font-size: 13px; font-weight: 700; letter-spacing: .5px; }
+.player-code-directory-item[hidden] { display: none; }
 @media (max-width: 850px) { .legacy-player-layout { grid-template-columns: 1fr; }.legacy-player-results { grid-template-columns: repeat(2,minmax(0,1fr)); max-height: none; } }
 @media (max-width: 560px) { .legacy-player-results { grid-template-columns: 1fr; }.legacy-player-stats { grid-template-columns: 1fr 1fr; }.legacy-player-form,.legacy-history-panel { padding: 12px; }.legacy-player-form .form-row { grid-template-columns: 1fr; } }
 @media (max-width: 1150px) { .simple-dashboard .portal-topbar { height: auto; min-height: 64px; flex-wrap: wrap; justify-content: space-between; padding: 12px 18px; }.simple-dashboard .portal-topbar .topbar-start { order: 1; flex: 1 1 auto; min-width: 0; }.simple-dashboard .portal-topbar .topbar-actions { order: 2; flex: 0 0 auto; }.simple-dashboard #portal-member-switch { order: 3; flex: 1 0 100%; min-width: 0; margin-inline-start: 0; } }

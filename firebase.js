@@ -1094,14 +1094,6 @@ function academyServices() {
       const result = await createPlayerPaymentRequest(request);
       return result.data.payment;
     },
-    async closeTrainerPayroll(month) {
-      if (activeProfile?.role !== "coach" || activeProfile.id !== auth.currentUser?.uid) {
-        throw new Error("إقفال أجور المدربين متاح للمشرف المسجل فقط.");
-      }
-      const closePayroll = httpsCallable(functions, "closeTrainerPayroll");
-      const result = await closePayroll({ month });
-      return result.data;
-    },
     async deleteGuardian(guardian, players) {
       await runTransaction(db, async transaction => {
         const profileRef = doc(db, "users", guardian.id);

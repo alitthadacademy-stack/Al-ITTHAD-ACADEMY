@@ -19,6 +19,7 @@ let viewHistory = [];
 let selectedPlayerId = null;
 let selectedLegacyPlayerId = null;
 let legacyPlayerSearch = "";
+let playerCodeSearch = "";
 let guardianReportSearch = "";
 let selectedReportGuardianId = "";
 let selectedTrainerReportId = "";
@@ -287,6 +288,85 @@ function localDateString(date = new Date()) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+const TRAINER_PAYROLL_WINDOW_MS = 48 * 60 * 60 * 1000;
+
+function monthBounds(month) {
+  if (!/^\d{4}-\d{2}$/.test(month)) return null;
+  const [year, monthNumber] = month.split("-").map(Number);
+  if (monthNumber < 1 || monthNumber > 12) return null;
+  return {
+    start: new Date(year, monthNumber - 1, 1).getTime(),
+    end: new Date(year, monthNumber, 1).getTime()
+  };
+}
+
+function previousMonth(month) {
+  const bounds = monthBounds(month);
+  if (!bounds) return "";
+  return localDateString(new Date(bounds.start - 1)).slice(0, 7);
+}
+
+function monthEndDate(month) {
+  const bounds = monthBounds(month);
+  if (!bounds) return "";
+  const [year, monthNumber] = month.split("-").map(Number);
+  return localDateString(new Date(year, monthNumber, 0));
+}
+
+function trainerMonthlySalary(trainerId, month) {
+  return data.expenses.find(expense =>
+    expense.monthlyPayroll === true
+    && expense.payrollType === "monthly-salary"
+    && expense.payrollTrainerId === trainerId
+    && expense.payrollMonth === month
+  ) || null;
+}
+
+function trainerWasActiveInMonth(trainer, month) {
+  const endDate = monthEndDate(month);
+  if (!endDate || !trainer.joinedAt) return true;
+  const joinedAt = new Date(trainer.joinedAt);
+  return !Number.isFinite(joinedAt.getTime()) || localDateString(joinedAt) <= endDate;
+}
+
+function trainerPayrollWindowIsOpen(month, now = Date.now()) {
+  const bounds = monthBounds(month);
+  return Boolean(bounds && now >= bounds.end - TRAINER_PAYROLL_WINDOW_MS
+    && now < bounds.end + TRAINER_PAYROLL_WINDOW_MS);
+}
+
+function trainersMissingMonthlySalary(month) {
+  return data.users.filter(trainer =>
+    trainer.role === "trainer"
+    && trainerWasActiveInMonth(trainer, month)
+    && !trainerMonthlySalary(trainer.id, month)
+  );
+}
+
+function trainerPayrollEntryMonth(now = Date.now()) {
+  const currentMonth = localDateString(new Date(now)).slice(0, 7);
+  const priorMonth = previousMonth(currentMonth);
+  if (trainerPayrollWindowIsOpen(priorMonth, now)) return priorMonth;
+  if (trainersMissingMonthlySalary(priorMonth).length) return priorMonth;
+  if (trainerPayrollWindowIsOpen(currentMonth, now)) return currentMonth;
+  return currentMonth;
+}
+
+function canEditTrainerMonthlySalary(trainer, month, now = Date.now()) {
+  if (trainer?.role !== "trainer" || !trainerWasActiveInMonth(trainer, month)) return false;
+  if (trainerPayrollWindowIsOpen(month, now)) return true;
+  return month === previousMonth(localDateString(new Date(now)).slice(0, 7))
+    && !trainerMonthlySalary(trainer.id, month);
+}
+
+function trainersBlockedByMissingPayroll(now = Date.now()) {
+  const currentMonth = localDateString(new Date(now)).slice(0, 7);
+  const priorMonth = previousMonth(currentMonth);
+  const priorBounds = monthBounds(priorMonth);
+  if (!priorBounds || now < priorBounds.end + TRAINER_PAYROLL_WINDOW_MS) return [];
+  return trainersMissingMonthlySalary(priorMonth);
 }
 
 function addCalendarDays(isoDate, days) {
@@ -1180,7 +1260,7 @@ function renderView() {
       ? labels[button.dataset.view]
       : button.dataset.defaultLabel;
   });
-  const titles = { home: "الرئيسية", legacyPlayers: "ملفات اللاعبين الحاليين", schedule: "جدول التدريبات", attendance: "الحضور", subscription: isCoach ? "اشتراكات اللاعبين" : "اشتراكي", guardianReport: "تقرير ولي الأمر الشامل", payments: "المدفوعات", settings: "أيام العمل والأسعار", trainers: "إدارة المدربين", trainerAttendance: "حضور المدربين", finances: "الإيرادات والمصروفات" };
+  const titles = { home: "الرئيسية", legacyPlayers: "ملفات اللاعبين الحاليين", playerCodes: "أكواد اللاعبين", schedule: "جدول التدريبات", attendance: "الحضور", subscription: isCoach ? "اشتراكات اللاعبين" : "اشتراكي", guardianReport: "تقرير ولي الأمر الشامل", payments: "المدفوعات", settings: "أيام العمل والأسعار", trainers: "إدارة المدربين", trainerAttendance: "حضور المدربين", finances: "الإيرادات والمصروفات" };
   if ((isTrainer && !["home", "schedule", "attendance"].includes(activeView)) || (["member", "guardian"].includes(currentUser?.role) && !["home", "schedule", "attendance", "subscription", "payments"].includes(activeView))) activeView = "home";
   byId("view-title").textContent = isCoach && activeView === "home" ? "إدارة الأكاديمية" : isTrainer && activeView === "home" ? "مساحة المدرب" : isTrainer && activeView === "attendance" ? "تسجيل حضور لاعب" : isMemberSpace && activeView === "schedule" ? "المواعيد والحضور" : isMemberSpace && activeView === "subscription" ? "الاشتراكات والتدريب" : titles[activeView];
   byId("portal-back").disabled = viewHistory.length === 0;
@@ -1201,7 +1281,7 @@ function renderView() {
     notificationButton.hidden = !showAnnouncementsButton;
   }
   if (isCoach) {
-    content.innerHTML = activeView === "legacyPlayers" ? coachLegacyPlayersView() : activeView === "schedule" ? coachScheduleView() : activeView === "attendance" ? coachAttendanceView() : activeView === "subscription" ? coachPlayersView() : activeView === "guardianReport" ? coachGuardianReportView() : activeView === "payments" ? coachPaymentsView() : activeView === "settings" ? coachSettingsView() : activeView === "trainers" ? coachTrainersView() : activeView === "trainerAttendance" ? supervisorTrainerAttendanceView() : activeView === "finances" ? financeView() : coachHomeView();
+    content.innerHTML = activeView === "legacyPlayers" ? coachLegacyPlayersView() : activeView === "playerCodes" ? coachPlayerCodesView() : activeView === "schedule" ? coachScheduleView() : activeView === "attendance" ? coachAttendanceView() : activeView === "subscription" ? coachPlayersView() : activeView === "guardianReport" ? coachGuardianReportView() : activeView === "payments" ? coachPaymentsView() : activeView === "settings" ? coachSettingsView() : activeView === "trainers" ? coachTrainersView() : activeView === "trainerAttendance" ? supervisorTrainerAttendanceView() : activeView === "finances" ? financeView() : coachHomeView();
   } else if (isTrainer) {
     content.innerHTML = activeView === "schedule" ? trainerScheduleView() : activeView === "attendance" ? trainerAttendanceView() : trainerHomeView();
   } else {
@@ -1743,7 +1823,7 @@ function trainerScheduleView() {
 
 function coachTrainersView() {
   const trainers = data.users.filter(user => user.role === "trainer");
-  return `<section class="page-intro"><div><p class="eyebrow">فريق الأكاديمية</p><h1>إدارة المدربين</h1><p class="welcome-subtitle">سجّل أسماء المدربين وأجر كل تمرين، ثم عيّنهم إلى حصص التدريب.</p></div><button class="primary-button" data-action="new-trainer">＋ إضافة مدرب</button></section><section class="panel">${trainers.length ? `<div class="table-wrap"><table><thead><tr><th>المدرب</th><th>التمارين المسندة</th><th>الأجر لكل تمرين</th><th>حالة اليوم</th><th>إجراء</th></tr></thead><tbody>${trainers.map(trainer => { const sessions = data.sessions.filter(session => session.coachId === trainer.id); const todayRecords = data.trainerAttendance.filter(record => record.trainerId === trainer.id && record.isoDate === localDateString() && record.sessionId); const attended = todayRecords.filter(record => record.status === "حاضر").length; const absent = todayRecords.filter(record => record.status === "غائب").length; return `<tr><td>${escapeHtml(trainer.name)}</td><td>${arabicDigits(sessions.length)} تمرين</td><td>${trainer.sessionRate ? `${arabicDigits(trainer.sessionRate)} ج.م` : "حدّد الأجر"}</td><td><span class="subscription-badge ${attended ? "status-active" : absent ? "status-expired" : "status-soon"}">${attended ? `${arabicDigits(attended)} حاضر` : absent ? `${arabicDigits(absent)} غائب` : "لم يسجل بعد"}</span></td><td><button class="small-action" data-action="edit-trainer" data-trainer="${escapeHtml(trainer.id)}">تعديل المدرب والأجر</button><button class="small-action" data-action="trainer-report" data-trainer="${escapeHtml(trainer.id)}">كشف الحضور</button></td></tr>`; }).join("")}</tbody></table></div>` : '<div class="empty-state"><p>أضف أسماء المدربين لإسنادهم إلى الحصص وتسجيل حضورهم.</p></div>'}</section>`;
+  return `<section class="page-intro"><div><p class="eyebrow">فريق الأكاديمية</p><h1>إدارة المدربين</h1><p class="welcome-subtitle">سجّل أسماء المدربين، ثم عيّنهم إلى حصص التدريب. يُحدد أجر كل مدرب شهريًا من صفحة الحضور.</p></div><button class="primary-button" data-action="new-trainer">＋ إضافة مدرب</button></section><section class="panel">${trainers.length ? `<div class="table-wrap"><table><thead><tr><th>المدرب</th><th>التمارين المسندة</th><th>حالة اليوم</th><th>إجراء</th></tr></thead><tbody>${trainers.map(trainer => { const sessions = data.sessions.filter(session => session.coachId === trainer.id); const todayRecords = data.trainerAttendance.filter(record => record.trainerId === trainer.id && record.isoDate === localDateString() && record.sessionId); const attended = todayRecords.filter(record => record.status === "حاضر").length; const absent = todayRecords.filter(record => record.status === "غائب").length; return `<tr><td>${escapeHtml(trainer.name)}</td><td>${arabicDigits(sessions.length)} تمرين</td><td><span class="subscription-badge ${attended ? "status-active" : absent ? "status-expired" : "status-soon"}">${attended ? `${arabicDigits(attended)} حاضر` : absent ? `${arabicDigits(absent)} غائب` : "لم يسجل بعد"}</span></td><td><button class="small-action" data-action="edit-trainer" data-trainer="${escapeHtml(trainer.id)}">تعديل بيانات المدرب</button><button class="small-action" data-action="trainer-report" data-trainer="${escapeHtml(trainer.id)}">كشف الحضور والأجر</button></td></tr>`; }).join("")}</tbody></table></div>` : '<div class="empty-state"><p>أضف أسماء المدربين لإسنادهم إلى الحصص وتسجيل حضورهم.</p></div>'}</section>`;
 }
 
 function openTrainerForm(trainerId = "") {
@@ -1752,7 +1832,7 @@ function openTrainerForm(trainerId = "") {
   if (trainerId && !trainer) { showToast("لم يتم العثور على المدرب."); return; }
   openModal(
     trainer ? `تعديل بيانات ${trainer.name}` : "إضافة مدرب",
-    `<input type="hidden" name="trainerId" value="${escapeHtml(trainer?.id || "")}"><label>اسم المدرب<input name="name" required minlength="2" maxlength="80" value="${escapeHtml(trainer?.name || "")}" placeholder="اسم المدرب بالكامل"></label><label>الأجر عن كل تمرين/حصة بالجنيه<input name="sessionRate" type="number" min="0.01" step="0.01" required value="${Number(trainer?.sessionRate || 0) || ""}" placeholder="مثال: ١٥٠"></label><p class="modal-explainer">يُحتسب الأجر عن كل تمرين مسند يسجل المشرف حضوره للمدرب. يُحفظ سعر كل حصة في سجل حضورها لتثبيت أجر الشهر. لا يلزم للمدرب بريد إلكتروني أو حساب دخول.</p>`,
+    `<input type="hidden" name="trainerId" value="${escapeHtml(trainer?.id || "")}"><label>اسم المدرب<input name="name" required minlength="2" maxlength="80" value="${escapeHtml(trainer?.name || "")}" placeholder="اسم المدرب بالكامل"></label><p class="modal-explainer">يُحدد أجر المدرب كمبلغ شهري مستقل من صفحة حضور المدربين. لا يلزم للمدرب بريد إلكتروني أو حساب دخول.</p>`,
     trainer ? "حفظ بيانات المدرب" : "حفظ اسم المدرب",
     form => saveTrainer(form),
     "إدارة المدربين"
@@ -2028,9 +2108,7 @@ async function saveSubscriptionOverride(form, playerId) {
 async function saveTrainer(form) {
   if (currentUser?.role !== "coach") { showToast("إضافة المدربين متاحة للمشرف فقط."); return; }
   const name = String(form.get("name")).trim().replace(/\s+/g, " ");
-  const sessionRate = Number(form.get("sessionRate"));
   if (name.length < 2 || name.length > 80) { showToast("أدخل اسمًا صحيحًا للمدرب."); return; }
-  if (!isValidCurrencyAmount(sessionRate) || sessionRate <= 0) { showToast("أدخل أجرًا صحيحًا أكبر من صفر لكل تمرين."); return; }
   const trainerId = String(form.get("trainerId") || "");
   if (data.users.some(user => user.role === "trainer" && user.id !== trainerId && user.name.trim().toLocaleLowerCase("ar") === name.toLocaleLowerCase("ar"))) {
     showToast("هذا الاسم مسجل بالفعل ضمن المدربين.");
@@ -2041,7 +2119,7 @@ async function saveTrainer(form) {
   const previous = existing ? { ...existing } : null;
   const assignedSessions = existing ? data.sessions.filter(session => session.coachId === existing.id) : [];
   const previousSessionNames = assignedSessions.map(session => session.coach);
-  const trainer = { ...(existing || {}), id: existing?.id || crypto.randomUUID(), role: "trainer", name, sessionRate, joinedAt: existing?.joinedAt || new Date().toISOString() };
+  const trainer = { ...(existing || {}), id: existing?.id || crypto.randomUUID(), role: "trainer", name, joinedAt: existing?.joinedAt || new Date().toISOString() };
   if (existing) Object.assign(existing, trainer);
   else data.users.push(trainer);
   assignedSessions.forEach(session => { session.coach = name; });
@@ -2054,12 +2132,13 @@ async function saveTrainer(form) {
   closeModal();
   activeView = "trainers";
   renderView();
-  showToast(existing ? `تم تحديث بيانات المدرب ${name} وأجر التمرين.` : `تمت إضافة المدرب ${name}.`);
+  showToast(existing ? `تم تحديث بيانات المدرب ${name}.` : `تمت إضافة المدرب ${name}.`);
 }
 
 function supervisorTrainerAttendanceView() {
   const trainers = data.users.filter(user => user.role === "trainer");
   const isoDate = trainerAttendanceDate || localDateString();
+  const attendanceMonth = isoDate.slice(0, 7);
   const sessionsForDate = data.sessions.filter(session => sessionDays(session).includes(weekdayForDate(isoDate)));
   const records = data.trainerAttendance.filter(record => record.isoDate === isoDate);
   const trainerRows = trainers.map(trainer => {
@@ -2071,7 +2150,8 @@ function supervisorTrainerAttendanceView() {
       record.trainerId === trainer.id && record.sessionId === session.id && record.status === "غائب"
     )).length;
     const status = present ? "حاضر" : absent ? "غائب" : "لم يسجل";
-    return `<tr><td>${escapeHtml(trainer.name)}<small class="table-subtext">${arabicDigits(assignedSessions.length)} تمرين مسند في هذا اليوم</small></td><td><span class="subscription-badge ${present ? "status-active" : absent ? "status-expired" : "status-soon"}">${status}</span><small class="table-subtext">${arabicDigits(present)} حاضر · ${arabicDigits(absent)} غائب</small><div><button class="small-action" data-action="trainer-report" data-trainer="${escapeHtml(trainer.id)}" aria-label="كشف حضور وأجر ${escapeHtml(trainer.name)}" title="كشف الحضور والأجر">📊</button></div></td><td>${arabicDigits(Number(trainer.sessionRate) || 0)} ج.م / تمرين</td></tr>`;
+    const salary = trainerMonthlySalary(trainer.id, attendanceMonth);
+    return `<tr><td>${escapeHtml(trainer.name)}<small class="table-subtext">${arabicDigits(assignedSessions.length)} تمرين مسند في هذا اليوم</small></td><td><span class="subscription-badge ${present ? "status-active" : absent ? "status-expired" : "status-soon"}">${status}</span><small class="table-subtext">${arabicDigits(present)} حاضر · ${arabicDigits(absent)} غائب</small><div><button class="small-action" data-action="trainer-report" data-trainer="${escapeHtml(trainer.id)}" aria-label="كشف حضور وأجر ${escapeHtml(trainer.name)}" title="كشف الحضور والأجر">📊</button></div></td><td>${salary ? `${arabicDigits(salary.amount)} ج.م` : "لم يحدد بعد"}</td></tr>`;
   }).join("");
   const selectedTrainer = trainers.find(trainer => trainer.id === selectedTrainerReportId);
   let report = "";
@@ -2082,7 +2162,7 @@ function supervisorTrainerAttendanceView() {
     ).sort((left, right) => left.isoDate.localeCompare(right.isoDate) || String(left.sessionTitle).localeCompare(String(right.sessionTitle), "ar"));
     const presentRecords = monthRecords.filter(record => record.status === "حاضر");
     const absentRecords = monthRecords.filter(record => record.status === "غائب");
-    const totalPay = presentRecords.reduce((sum, record) => sum + Number(record.sessionRate || 0), 0);
+    const salary = trainerMonthlySalary(selectedTrainer.id, month);
     const reportSessions = new Map(data.sessions
       .filter(session => session.coachId === selectedTrainer.id)
       .map(session => [session.id, session]));
@@ -2092,19 +2172,116 @@ function supervisorTrainerAttendanceView() {
     const sessions = [...reportSessions.entries()].map(([sessionId, session]) => {
       const sessionRecords = monthRecords.filter(record => record.sessionId === sessionId);
       const title = session.title || session.sessionTitle || "تمرين";
-      const recordedRates = [...new Set(sessionRecords.map(record => Number(record.sessionRate)).filter(rate => rate > 0))];
-      const rateLabel = recordedRates.length > 1
-        ? `${arabicDigits(Math.min(...recordedRates))}–${arabicDigits(Math.max(...recordedRates))}`
-        : arabicDigits(recordedRates[0] || Number(selectedTrainer.sessionRate) || 0);
       const attendedDays = sessionRecords.filter(record => record.status === "حاضر").map(record => record.isoDate);
       const absentDays = sessionRecords.filter(record => record.status === "غائب").map(record => record.isoDate);
-      const sessionTotal = sessionRecords.filter(record => record.status === "حاضر")
-        .reduce((sum, record) => sum + Number(record.sessionRate || 0), 0);
-      return `<tr><td>${escapeHtml(title)}<small class="table-subtext">${escapeHtml(session.sessionTime || session.time || "")}</small></td><td>${attendedDays.length ? attendedDays.map(escapeHtml).join("، ") : "—"}</td><td>${absentDays.length ? absentDays.map(escapeHtml).join("، ") : "—"}</td><td>${rateLabel} ج.م</td><td>${arabicDigits(sessionTotal)} ج.م</td></tr>`;
+      return `<tr><td>${escapeHtml(title)}<small class="table-subtext">${escapeHtml(session.sessionTime || session.time || "")}</small></td><td>${attendedDays.length ? attendedDays.map(escapeHtml).join("، ") : "—"}</td><td>${absentDays.length ? absentDays.map(escapeHtml).join("، ") : "—"}</td></tr>`;
     }).join("");
-    report = `<section class="panel"><div class="panel-heading"><div><h2>كشف ${escapeHtml(selectedTrainer.name)}</h2><p>الحضور والغياب والأجر عن كل تمرين</p></div><button type="button" class="small-action" data-action="close-trainer-report">إغلاق الكشف</button></div><label>الشهر<input id="trainer-report-month" type="month" value="${escapeHtml(month)}"></label><div class="member-stats"><article class="member-stat"><p>تمارين حضرها</p><strong>${arabicDigits(presentRecords.length)}</strong></article><article class="member-stat"><p>تمارين غابها</p><strong>${arabicDigits(absentRecords.length)}</strong></article><article class="member-stat"><p>الأجر المستحق لهذا الشهر</p><strong>${arabicDigits(totalPay)} ج.م</strong></article></div>${sessions.length ? `<div class="table-wrap"><table><thead><tr><th>التمرين المسند</th><th>أيام الحضور</th><th>أيام الغياب</th><th>أجر التمرين</th><th>الإجمالي</th></tr></thead><tbody>${sessions}</tbody></table></div>` : '<div class="empty-state"><p>لا توجد تمارين مسندة لهذا المدرب.</p></div>'}<p class="form-note">الأيام التي لم تُسجّل لا تُحسب حضورًا أو غيابًا، ولا تدخل في الأجر حتى يحدد المشرف حالتها.</p></section>`;
+    report = `<section class="panel"><div class="panel-heading"><div><h2>كشف ${escapeHtml(selectedTrainer.name)}</h2><p>سجل الحضور والغياب والأجر الشهري</p></div><button type="button" class="small-action" data-action="close-trainer-report">إغلاق الكشف</button></div><label>الشهر<input id="trainer-report-month" type="month" value="${escapeHtml(month)}"></label><div class="member-stats"><article class="member-stat"><p>تمارين حضرها</p><strong>${arabicDigits(presentRecords.length)}</strong></article><article class="member-stat"><p>تمارين غابها</p><strong>${arabicDigits(absentRecords.length)}</strong></article><article class="member-stat"><p>الأجر الشهري</p><strong>${salary ? `${arabicDigits(salary.amount)} ج.م` : "لم يحدد"}</strong></article></div>${sessions.length ? `<div class="table-wrap"><table><thead><tr><th>التمرين المسند</th><th>أيام الحضور</th><th>أيام الغياب</th></tr></thead><tbody>${sessions}</tbody></table></div>` : '<div class="empty-state"><p>لا توجد تمارين مسندة لهذا المدرب.</p></div>'}<p class="form-note">الأجر مبلغ شهري ثابت يحدده المشرف، ولا يتغير حسب عدد الحصص المسجلة.</p></section>`;
   }
-  return `<section class="page-intro"><div><p class="eyebrow">سجل الجهاز الفني</p><h1>حضور المدربين</h1><p class="welcome-subtitle">سجّل حضور أو غياب كل تمرين مسند، وتابع الأجر الشهري. يُقفل كشف الأجور تلقائيًا في بداية الشهر التالي.</p></div><button class="primary-button" data-action="mark-trainer-attendance">تسجيل حضور الحصص</button></section><section class="panel"><div class="panel-heading"><div><h2>حالة اليوم</h2><p>${egyptianDate.format(new Date(`${isoDate}T12:00:00`))}</p></div><label>التاريخ<input id="trainer-attendance-date" type="date" value="${escapeHtml(isoDate)}" max="${localDateString()}"></label></div>${trainers.length ? `<div class="table-wrap"><table><thead><tr><th>المدرب</th><th>حالة تمارينه</th><th>الأجر لكل تمرين</th></tr></thead><tbody>${trainerRows}</tbody></table></div>` : '<div class="empty-state"><p>أضف المدربين وأسند إليهم التمارين من صفحة الجدول.</p></div>'}</section>${report}`;
+  return `<section class="page-intro"><div><p class="eyebrow">سجل الجهاز الفني</p><h1>حضور المدربين</h1><p class="welcome-subtitle">سجّل حضور أو غياب كل تمرين مسند، وتابع الأجر الشهري لكل مدرب.</p></div><button class="primary-button" data-action="mark-trainer-attendance">تسجيل حضور الحصص</button></section>${trainerPayrollView()}<section class="panel"><div class="panel-heading"><div><h2>حالة اليوم</h2><p>${egyptianDate.format(new Date(`${isoDate}T12:00:00`))}</p></div><label>التاريخ<input id="trainer-attendance-date" type="date" value="${escapeHtml(isoDate)}" max="${localDateString()}"></label></div>${trainers.length ? `<div class="table-wrap"><table><thead><tr><th>المدرب</th><th>حالة تمارينه</th><th>أجر الشهر</th></tr></thead><tbody>${trainerRows}</tbody></table></div>` : '<div class="empty-state"><p>أضف المدربين وأسند إليهم التمارين من صفحة الجدول.</p></div>'}</section>${report}`;
+}
+
+function trainerPayrollView(now = Date.now()) {
+  const trainers = data.users.filter(user => user.role === "trainer");
+  const month = trainerPayrollEntryMonth(now);
+  const bounds = monthBounds(month);
+  const monthOpen = trainerPayrollWindowIsOpen(month, now);
+  const missing = trainersMissingMonthlySalary(month);
+  const overdue = !monthOpen && missing.length > 0;
+  const nextOpening = bounds ? new Intl.DateTimeFormat("ar-EG", {
+    dateStyle: "long",
+    timeStyle: "short"
+  }).format(new Date(bounds.end - TRAINER_PAYROLL_WINDOW_MS)) : "";
+  const intro = overdue
+    ? `فات موعد تحديد أجر ${missing.map(trainer => escapeHtml(trainer.name)).join("، ")} عن ${escapeHtml(month)}؛ أضف الأجر لاستئناف تسجيل حضورهم.`
+    : monthOpen
+      ? "نافذة تحديد الأجر مفتوحة الآن. يُضاف كل أجر تلقائيًا إلى مصروفات شهره."
+      : `تُفتح إضافة أجر الشهر ${escapeHtml(month)} في ${escapeHtml(nextOpening)}، قبل نهايته بـ٤٨ ساعة.`;
+  const rows = trainers.map(trainer => {
+    const salary = trainerMonthlySalary(trainer.id, month);
+    const active = trainerWasActiveInMonth(trainer, month);
+    const editable = canEditTrainerMonthlySalary(trainer, month, now);
+    const status = !active ? "لم يكن ضمن المدربين في هذا الشهر"
+      : salary ? `${arabicDigits(salary.amount)} ج.م`
+        : "لم يُحدد";
+    const action = active
+      ? `<button class="small-action" data-action="set-trainer-salary" data-trainer="${escapeHtml(trainer.id)}" data-month="${escapeHtml(month)}" ${editable ? "" : "disabled"}>${salary ? "تعديل الأجر" : "إضافة الأجر"}</button>`
+      : "—";
+    return `<tr><td>${escapeHtml(trainer.name)}</td><td>${status}</td><td>${action}</td></tr>`;
+  }).join("");
+  return `<section class="panel trainer-payroll-panel"><div class="panel-heading"><div><h2>الأجر الشهري · ${escapeHtml(month)}</h2><p>${monthOpen ? "تُفتح الإضافة قبل نهاية الشهر بـ٤٨ ساعة وتستمر حتى ٤٨ ساعة من بداية الشهر التالي." : overdue ? "يمكن استكمال تحديد الأجر المتأخر، لكن حضور المدرب يظل موقوفًا حتى إضافته." : "تُفتح إضافة الأجر قبل نهاية الشهر بـ٤٨ ساعة."}</p></div></div><p class="form-note">${intro}</p>${trainers.length ? `<div class="table-wrap"><table><thead><tr><th>المدرب</th><th>الأجر الشهري</th><th>الإجراء</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty-state"><p>أضف المدربين أولًا.</p></div>'}</section>`;
+}
+
+function openTrainerMonthlySalaryForm(trainerId, month) {
+  if (currentUser?.role !== "coach") { showToast("تحديد أجور المدربين متاح للمشرف فقط."); return; }
+  const trainer = data.users.find(user => user.id === trainerId && user.role === "trainer");
+  if (!trainer || !canEditTrainerMonthlySalary(trainer, month)) {
+    showToast("لا يمكن تعديل أجر هذا الشهر الآن.");
+    return;
+  }
+  const salary = trainerMonthlySalary(trainer.id, month);
+  const monthName = new Intl.DateTimeFormat("ar-EG", { month: "long", year: "numeric" })
+    .format(new Date(`${month}-01T12:00:00`));
+  openModal(
+    `أجر ${trainer.name} · ${monthName}`,
+    `<input type="hidden" name="trainerId" value="${escapeHtml(trainer.id)}"><input type="hidden" name="payrollMonth" value="${escapeHtml(month)}"><label>الأجر الشهري بالجنيه<input name="amount" type="number" min="0.01" step="0.01" required value="${salary ? Number(salary.amount) : ""}" placeholder="أدخل أجر الشهر"></label><p class="modal-explainer">سيُسجل الأجر تلقائيًا كمصروف بتاريخ آخر يوم من الشهر. ${trainerPayrollWindowIsOpen(month) ? "يمكن تعديل المبلغ حتى انتهاء مهلة الشهر." : "هذا إدخال متأخر مطلوب لاستئناف تسجيل الحضور."}</p>`,
+    salary ? "حفظ تعديل الأجر" : "حفظ الأجر الشهري",
+    form => saveTrainerMonthlySalary(form),
+    "الأجور والمصروفات"
+  );
+}
+
+async function saveTrainerMonthlySalary(form) {
+  if (currentUser?.role !== "coach") { showToast("تحديد أجور المدربين متاح للمشرف فقط."); return; }
+  const trainerId = String(form.get("trainerId") || "");
+  const month = String(form.get("payrollMonth") || "");
+  const amount = Number(form.get("amount"));
+  const trainer = data.users.find(user => user.id === trainerId && user.role === "trainer");
+  if (!trainer || !canEditTrainerMonthlySalary(trainer, month)
+    || !isValidCurrencyAmount(amount) || amount <= 0) {
+    showToast("تعذر حفظ الأجر. تحقق من المبلغ وموعد تحديد الأجر لهذا الشهر.");
+    return;
+  }
+  const existingIndex = data.expenses.findIndex(expense =>
+    expense.monthlyPayroll === true
+    && expense.payrollTrainerId === trainer.id
+    && expense.payrollMonth === month
+  );
+  const existing = existingIndex >= 0 ? data.expenses[existingIndex] : null;
+  const expense = {
+    id: existing?.id || `trainer-payroll-${month}-${trainer.id}`,
+    description: `أجر المدرب ${trainer.name} عن ${month}`,
+    amount: Math.round(amount * 100) / 100,
+    date: monthEndDate(month),
+    createdAt: existing?.createdAt || Date.now(),
+    monthlyPayroll: true,
+    payrollType: "monthly-salary",
+    payrollMonth: month,
+    payrollTrainerId: trainer.id
+  };
+  if (existing) data.expenses[existingIndex] = expense;
+  else data.expenses.push(expense);
+  if (!saveLocalData()) {
+    if (existing) data.expenses[existingIndex] = existing;
+    else data.expenses.pop();
+    return;
+  }
+  try {
+    if (cloudProfile) {
+      await cloudWriteQueue;
+      const firebase = await window.firebaseReady;
+      await firebase.saveAcademyData(JSON.parse(JSON.stringify(data)), cloudProfile);
+    }
+    closeModal();
+    renderView();
+    showToast(`تم تحديد أجر ${trainer.name} وإضافته إلى مصروفات ${month}.`);
+  } catch (error) {
+    if (existing) data.expenses[existingIndex] = existing;
+    else data.expenses = data.expenses.filter(item => item.id !== expense.id);
+    saveLocalData();
+    console.error("تعذر حفظ أجر المدرب في Firestore.", error);
+    showToast(error instanceof Error ? `تعذر حفظ الأجر الشهري: ${error.message}` : "تعذر حفظ الأجر الشهري في Firestore.");
+  }
 }
 
 function openTrainerAttendanceForm() {
@@ -2114,36 +2291,46 @@ function openTrainerAttendanceForm() {
   const sessions = data.sessions.filter(session => sessionDays(session).includes(weekday));
   if (!sessions.length) { showToast(`لا توجد تمارين مجدولة يوم ${weekday}. راجع الأيام وإسناد المدرب في الجدول.`); return; }
   if (attendanceDate > localDateString()) { showToast("لا يمكن تسجيل حضور أو غياب بتاريخ مستقبلي."); return; }
+  const blockedTrainers = trainersBlockedByMissingPayroll();
+  const blockedIds = new Set(blockedTrainers.map(trainer => trainer.id));
+  const availableSessions = sessions.filter(session => !blockedIds.has(session.coachId));
+  if (!availableSessions.length) {
+    showToast(`لا يمكن تسجيل الحضور قبل تحديد أجر الشهر السابق للمدرب: ${blockedTrainers.map(trainer => trainer.name).join("، ")}.`);
+    return;
+  }
   const now = new Date();
   const timeNow = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-  const rows = sessions.map(session => {
+  const rows = availableSessions.map(session => {
     const trainer = data.users.find(user => user.id === session.coachId && user.role === "trainer");
     if (!trainer) return "";
     const existing = data.trainerAttendance.find(record =>
       record.trainerId === trainer.id && record.sessionId === session.id && record.isoDate === attendanceDate
     );
-    return `<div class="roster-row"><div><strong>${escapeHtml(trainer.name)}</strong><small>${escapeHtml(session.title)} · ${escapeHtml(sessionTimeRange(session))} · ${arabicDigits(Number(trainer.sessionRate) || 0)} ج.م</small></div><select name="trainer-status-${escapeHtml(session.id)}" required><option value="">اختر الحالة</option><option value="حاضر" ${existing?.status === "حاضر" ? "selected" : ""}>حاضر</option><option value="غائب" ${existing?.status === "غائب" ? "selected" : ""}>غائب</option></select><label>وقت الحضور<input name="trainer-time-${escapeHtml(session.id)}" type="time" value="${escapeHtml(existing?.checkInAt || timeNow)}" ${existing?.status === "غائب" ? "disabled" : ""}></label></div>`;
+    return `<div class="roster-row"><div><strong>${escapeHtml(trainer.name)}</strong><small>${escapeHtml(session.title)} · ${escapeHtml(sessionTimeRange(session))}</small></div><select name="trainer-status-${escapeHtml(session.id)}" required><option value="">اختر الحالة</option><option value="حاضر" ${existing?.status === "حاضر" ? "selected" : ""}>حاضر</option><option value="غائب" ${existing?.status === "غائب" ? "selected" : ""}>غائب</option></select><label>وقت الحضور<input name="trainer-time-${escapeHtml(session.id)}" type="time" value="${escapeHtml(existing?.checkInAt || timeNow)}" ${existing?.status === "غائب" ? "disabled" : ""}></label></div>`;
   }).join("");
-  openModal("تسجيل حضور وغياب التمارين المسندة", `<p class="modal-explainer">اختر حاضرًا أو غائبًا لكل تمرين مسند لهذا اليوم. الأجر يُحتسب للحضور فقط. الأيام التي لم تُسجّل لا تُعتبر غيابًا.</p><input type="hidden" name="attendanceDate" value="${escapeHtml(attendanceDate)}"><div class="roster-list">${rows}</div>`, "حفظ حالات التمارين", form => saveTrainerAttendance(form), "إدارة المدربين");
+  const blockedNotice = blockedTrainers.length
+    ? `<p class="inline-notice">تم إيقاف تسجيل حضور ${blockedTrainers.map(trainer => escapeHtml(trainer.name)).join("، ")} حتى تحديد أجر الشهر السابق.</p>`
+    : "";
+  openModal("تسجيل حضور وغياب التمارين المسندة", `${blockedNotice}<p class="modal-explainer">اختر حاضرًا أو غائبًا لكل تمرين مسند لهذا اليوم. أيام عدم التسجيل لا تُعتبر غيابًا، والأجر مبلغ شهري مستقل عن الحضور.</p><input type="hidden" name="attendanceDate" value="${escapeHtml(attendanceDate)}"><div class="roster-list">${rows}</div>`, "حفظ حالات التمارين", form => saveTrainerAttendance(form), "إدارة المدربين");
 }
 
 async function saveTrainerAttendance(form) {
   if (currentUser?.role !== "coach") { showToast("تسجيل حضور المدربين من صلاحية المشرف فقط."); return; }
   const isoDate = String(form.get("attendanceDate"));
   if (!isValidIsoDate(isoDate) || isoDate > localDateString()) { showToast("أدخل تاريخًا صحيحًا غير مستقبلي."); return; }
+  const blockedTrainers = trainersBlockedByMissingPayroll();
+  const blockedIds = new Set(blockedTrainers.map(trainer => trainer.id));
   const sessions = data.sessions.filter(session => sessionDays(session).includes(weekdayForDate(isoDate)));
   const entries = sessions.map(session => {
     const trainer = data.users.find(user => user.id === session.coachId && user.role === "trainer");
     if (!trainer) return null;
+    if (blockedIds.has(trainer.id)) return null;
     const status = String(form.get(`trainer-status-${session.id}`) || "");
     if (!["حاضر", "غائب"].includes(status)) return null;
-    const rate = Number(trainer.sessionRate);
-    if (!isValidCurrencyAmount(rate) || rate <= 0) throw new Error(`أدخل أجرًا صحيحًا لكل تمرين للمدرب ${trainer.name} قبل حفظ الحضور.`);
     return {
       trainer,
       session,
       status,
-      rate,
       checkInAt: status === "حاضر" ? String(form.get(`trainer-time-${session.id}`) || "") : "",
       existing: data.trainerAttendance.find(record =>
         record.trainerId === trainer.id && record.sessionId === session.id && record.isoDate === isoDate
@@ -2151,7 +2338,7 @@ async function saveTrainerAttendance(form) {
     };
   }).filter(Boolean);
   const changes = [];
-  entries.forEach(({ trainer, session, status, rate, checkInAt, existing }) => {
+  entries.forEach(({ trainer, session, status, checkInAt, existing }) => {
     const previous = existing ? { ...existing } : null;
     const record = {
       ...(existing || {}),
@@ -2164,14 +2351,18 @@ async function saveTrainerAttendance(form) {
       isoDate,
       status,
       checkInAt,
-      sessionRate: Number(existing?.sessionRate) > 0 ? Number(existing.sessionRate) : rate,
       timestamp: new Date(`${isoDate}T${checkInAt || "00:00"}:00`).getTime()
     };
     if (existing) Object.assign(existing, record);
     else data.trainerAttendance.push(record);
     changes.push({ record, previous });
   });
-  if (!changes.length) { showToast("لا توجد تمارين مسندة لتسجيلها في هذا التاريخ."); return; }
+  if (!changes.length) {
+    showToast(blockedTrainers.length
+      ? `لا يمكن تسجيل الحضور قبل تحديد أجر الشهر السابق للمدرب: ${blockedTrainers.map(trainer => trainer.name).join("، ")}.`
+      : "لا توجد تمارين مسندة لتسجيلها في هذا التاريخ.");
+    return;
+  }
   if (!saveLocalData()) {
     changes.forEach(({ record, previous }) => {
       if (previous) Object.assign(record, previous);
@@ -2185,13 +2376,11 @@ async function saveTrainerAttendance(form) {
     const firebase = await window.firebaseReady;
     await firebase.saveTrainerAttendance(changes.map(({ record }) => record), cloudProfile);
     attendanceSaved = true;
-    const month = isoDate.slice(0, 7);
-    if (month < localDateString().slice(0, 7)) {
-      await firebase.closeTrainerPayroll(month);
-    }
     closeModal();
     renderView();
-    showToast("تم حفظ حضور وغياب كل تمرين، وتحديث مصروف الشهر إذا كان قد أُقفل.");
+    showToast(blockedTrainers.length
+      ? `تم حفظ الحالات المتاحة. ما زال حضور ${blockedTrainers.map(trainer => trainer.name).join("، ")} موقوفًا حتى تحديد أجر الشهر السابق.`
+      : "تم حفظ حضور وغياب كل تمرين.");
   } catch (error) {
     if (!attendanceSaved) {
       changes.forEach(({ record, previous }) => {
@@ -2203,10 +2392,10 @@ async function saveTrainerAttendance(form) {
       closeModal();
       renderView();
     }
-    console.error("تعذر تحديث مصروف أجور المدربين.", error);
+    console.error("تعذر حفظ حضور المدربين.", error);
     showToast(error instanceof Error
-      ? `${attendanceSaved ? "تم حفظ الحضور لكن تعذر تحديث مصروف الأجر" : "تعذر حفظ الحضور"}: ${error.message}`
-      : attendanceSaved ? "تم حفظ الحضور لكن تعذر تحديث مصروف الأجر." : "تعذر حفظ حضور المدربين.");
+      ? `${attendanceSaved ? "تم حفظ الحضور لكن تعذر إكمال المزامنة" : "تعذر حفظ الحضور"}: ${error.message}`
+      : attendanceSaved ? "تم حفظ الحضور لكن تعذر إكمال المزامنة." : "تعذر حفظ حضور المدربين.");
   }
 }
 
@@ -2233,7 +2422,7 @@ function financeView() {
     ...monthRevenues.map(revenue => ({ date: revenue.date, title: revenue.description, amount: Number(revenue.amount || 0), type: "إيراد", revenueId: revenue.id })),
     ...monthExpenses.map(expense => ({ date: expense.date, title: expense.description, amount: Number(expense.amount || 0), type: "مصروف", expenseId: expense.id, monthlyPayroll: expense.monthlyPayroll === true }))
   ].sort((a, b) => b.date.localeCompare(a.date));
-  return `<section class="page-intro"><div><p class="eyebrow">حسابات الأكاديمية</p><h1>الإيرادات والمصروفات</h1><p class="welcome-subtitle">الإيرادات تشمل الاشتراكات المؤكدة والإيرادات اليدوية؛ التحويلات قيد المراجعة لا تُحتسب. مصروف أجور المدربين يُضاف تلقائيًا عند إقفال الشهر.</p></div><div class="finance-actions"><button class="primary-button" data-action="new-revenue"><span>＋</span> تسجيل إيراد</button><button class="finance-expense-button" data-action="new-expense"><span>−</span> تسجيل مصروف</button></div></section><section class="finance-filter"><label>الشهر المعروض<input id="finance-month" type="month" value="${escapeHtml(month)}"></label></section><section class="member-stats coach-stats finance-stats"><article class="member-stat"><p>إيرادات هذا الشهر</p><strong>${arabicDigits(filteredIncomeTotal)} ج.م</strong><small>${arabicDigits(monthPayments.length + monthRevenues.length)} دفعة وإيراد</small></article><article class="member-stat"><p>مصروفات هذا الشهر</p><strong>${arabicDigits(filteredExpensesTotal)} ج.م</strong><small>${arabicDigits(monthExpenses.length)} مصروف</small></article><article class="member-stat"><p>صافي هذا الشهر</p><strong class="finance-net ${monthlyNet < 0 ? "negative" : ""}"><bdi dir="ltr">${arabicDigits(monthlyNet)}</bdi> ج.م</strong><small>إيرادات الشهر ناقص مصروفاته</small></article><article class="member-stat"><p>صافي الربح منذ البداية</p><strong class="finance-net ${lifetimeNet < 0 ? "negative" : ""}"><bdi dir="ltr">${arabicDigits(lifetimeNet)}</bdi> ج.م</strong><small>الإيرادات ${arabicDigits(totalIncome)} − المصروفات ${arabicDigits(totalExpenses)}</small></article></section><section class="panel"><div class="panel-heading"><div><h2>حركة الشهر</h2><p>الإيرادات المسجلة والمصروفات حسب التاريخ</p></div></div>${rows.length ? `<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>البيان</th><th>النوع</th><th>المبلغ</th><th>إجراء</th></tr></thead><tbody>${rows.map(row => `<tr><td>${escapeHtml(row.date)}</td><td>${escapeHtml(row.title)}${row.monthlyPayroll ? '<small class="table-subtext">مصروف آلي · يُعاد حسابه من الحضور</small>' : ""}</td><td><span class="subscription-badge ${row.type === "إيراد" ? "status-active" : "status-expired"}">${row.type}</span></td><td>${arabicDigits(row.amount)} ج.م</td><td>${row.expenseId && !row.monthlyPayroll ? `<button class="small-action" data-action="delete-expense" data-expense="${escapeHtml(row.expenseId)}">حذف المصروف</button>` : row.revenueId ? `<button class="small-action" data-action="delete-revenue" data-revenue="${escapeHtml(row.revenueId)}">حذف الإيراد</button>` : "—"}</td></tr>`).join("")}</tbody></table></div>` : '<div class="empty-state"><p>لا توجد حركات مالية في هذا الشهر.</p></div>'}</section>`;
+  return `<section class="page-intro"><div><p class="eyebrow">حسابات الأكاديمية</p><h1>الإيرادات والمصروفات</h1><p class="welcome-subtitle">الإيرادات تشمل الاشتراكات المؤكدة والإيرادات اليدوية؛ التحويلات قيد المراجعة لا تُحتسب. يُضاف أجر كل مدرب تلقائيًا للمصروفات عند تحديد الأجر الشهري من صفحة حضور المدربين.</p></div><div class="finance-actions"><button class="primary-button" data-action="new-revenue"><span>＋</span> تسجيل إيراد</button><button class="finance-expense-button" data-action="new-expense"><span>−</span> تسجيل مصروف</button></div></section><section class="finance-filter"><label>الشهر المعروض<input id="finance-month" type="month" value="${escapeHtml(month)}"></label></section><section class="member-stats coach-stats finance-stats"><article class="member-stat"><p>إيرادات هذا الشهر</p><strong>${arabicDigits(filteredIncomeTotal)} ج.م</strong><small>${arabicDigits(monthPayments.length + monthRevenues.length)} دفعة وإيراد</small></article><article class="member-stat"><p>مصروفات هذا الشهر</p><strong>${arabicDigits(filteredExpensesTotal)} ج.م</strong><small>${arabicDigits(monthExpenses.length)} مصروف</small></article><article class="member-stat"><p>صافي هذا الشهر</p><strong class="finance-net ${monthlyNet < 0 ? "negative" : ""}"><bdi dir="ltr">${arabicDigits(monthlyNet)}</bdi> ج.م</strong><small>إيرادات الشهر ناقص مصروفاته</small></article><article class="member-stat"><p>صافي الربح منذ البداية</p><strong class="finance-net ${lifetimeNet < 0 ? "negative" : ""}"><bdi dir="ltr">${arabicDigits(lifetimeNet)}</bdi> ج.م</strong><small>الإيرادات ${arabicDigits(totalIncome)} − المصروفات ${arabicDigits(totalExpenses)}</small></article></section><section class="panel"><div class="panel-heading"><div><h2>حركة الشهر</h2><p>الإيرادات المسجلة والمصروفات حسب التاريخ</p></div></div>${rows.length ? `<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>البيان</th><th>النوع</th><th>المبلغ</th><th>إجراء</th></tr></thead><tbody>${rows.map(row => `<tr><td>${escapeHtml(row.date)}</td><td>${escapeHtml(row.title)}${row.monthlyPayroll ? '<small class="table-subtext">أجر شهري للمدرب · مرتبط بشهر الأجر</small>' : ""}</td><td><span class="subscription-badge ${row.type === "إيراد" ? "status-active" : "status-expired"}">${row.type}</span></td><td>${arabicDigits(row.amount)} ج.م</td><td>${row.expenseId && !row.monthlyPayroll ? `<button class="small-action" data-action="delete-expense" data-expense="${escapeHtml(row.expenseId)}">حذف المصروف</button>` : row.revenueId ? `<button class="small-action" data-action="delete-revenue" data-revenue="${escapeHtml(row.revenueId)}">حذف الإيراد</button>` : "—"}</td></tr>`).join("")}</tbody></table></div>` : '<div class="empty-state"><p>لا توجد حركات مالية في هذا الشهر.</p></div>'}</section>`;
 }
 
 function openRevenueForm() {
@@ -2293,7 +2482,7 @@ function deleteExpense(expenseId) {
   if (currentUser?.role !== "coach") { showToast("حذف المصروفات متاح للمشرف فقط."); return; }
   const index = data.expenses.findIndex(expense => expense.id === expenseId);
   if (index < 0) { showToast("لم يتم العثور على المصروف."); return; }
-  if (data.expenses[index].monthlyPayroll === true) { showToast("مصروف أجور المدربين يُعاد حسابه من سجلات الحضور ولا يُحذف يدويًا."); return; }
+  if (data.expenses[index].monthlyPayroll === true) { showToast("مصروف أجر المدرب مرتبط بسجل الأجر الشهري ولا يُحذف من الحسابات."); return; }
   if (!window.confirm("هل تريد حذف هذا المصروف من الحسابات؟")) return;
   const [expense] = data.expenses.splice(index, 1);
   if (saveData()) {
@@ -2948,6 +3137,29 @@ function playerAgeInYears(player) {
   if (today.getMonth() < birth.getMonth()
     || (today.getMonth() === birth.getMonth() && today.getDate() < birth.getDate())) age -= 1;
   return age;
+}
+
+function coachPlayerCodesView() {
+  if (currentUser?.role !== "coach") return "";
+  const query = playerCodeSearch.trim().toLocaleLowerCase("ar");
+  const players = data.users.filter(player => player.role === "member")
+    .sort((left, right) => {
+      const leftHasBirthDate = playerAgeInYears(left) !== null;
+      const rightHasBirthDate = playerAgeInYears(right) !== null;
+      if (leftHasBirthDate && rightHasBirthDate && left.birthDate !== right.birthDate) {
+        return right.birthDate.localeCompare(left.birthDate);
+      }
+      if (leftHasBirthDate !== rightHasBirthDate) return leftHasBirthDate ? -1 : 1;
+      return String(left.name || "").localeCompare(String(right.name || ""), "ar");
+    });
+  const matchingPlayers = players.filter(player =>
+    String(player.name || "").toLocaleLowerCase("ar").includes(query)
+  );
+  const roster = matchingPlayers.map(player =>
+    `<article class="player-code-directory-item"><strong>${escapeHtml(player.name || "لاعب")}</strong><span>${escapeHtml(player.playerCode || "—")}</span></article>`
+  ).join("");
+  const emptyMessage = players.length ? "لا توجد نتائج مطابقة." : "لا يوجد لاعبون مسجلون بعد.";
+  return `<section class="page-intro"><div><p class="eyebrow">دليل الأكاديمية</p><h1>أكواد اللاعبين</h1><p class="welcome-subtitle">جميع اللاعبين وأكوادهم، مرتبين من الأصغر عمرًا إلى الأكبر.</p></div></section><section class="panel player-code-directory"><div class="panel-heading"><div><h2>قائمة اللاعبين</h2><p>${arabicDigits(players.length)} لاعب</p></div></div><label class="player-code-directory-search">بحث باسم اللاعب<input id="player-code-search" type="search" autocomplete="off" value="${escapeHtml(playerCodeSearch)}" placeholder="اكتب اسم اللاعب"></label><div class="player-code-directory-list">${roster}<p class="legacy-player-no-results" ${matchingPlayers.length ? "hidden" : ""}>${emptyMessage}</p></div></section>`;
 }
 
 function legacyDateFields(prefix, initialDate = "", optional = false) {
@@ -4896,7 +5108,7 @@ document.addEventListener("click", async event => {
   const viewButton = target.closest("[data-view]");
   if (viewButton) {
     const allowedViews = currentUser.role === "coach"
-      ? ["home", "legacyPlayers", "schedule", "attendance", "subscription", "guardianReport", "payments", "settings", "trainers", "trainerAttendance", "finances"]
+      ? ["home", "legacyPlayers", "playerCodes", "schedule", "attendance", "subscription", "guardianReport", "payments", "settings", "trainers", "trainerAttendance", "finances"]
       : currentUser.role === "trainer" ? ["home", "schedule", "attendance"] : ["home", "schedule", "attendance", "subscription", "payments"];
     if (!allowedViews.includes(viewButton.dataset.view)) { showToast("هذه الصفحة غير متاحة لحسابك."); return; }
     if (viewButton.dataset.view !== activeView) viewHistory.push(activeView);
@@ -4944,7 +5156,7 @@ document.addEventListener("click", async event => {
     renderView();
     return;
   }
-  if (["new-session", "edit-session", "delete-session", "take-attendance", "day-off", "code-attendance", "cash-payment", "cash-debt-payment", "new-trainer", "edit-trainer", "trainer-report", "close-trainer-report", "mark-trainer-attendance", "new-expense", "new-revenue", "instapay-settings", "confirm-payment", "reject-payment", "receipt-preview", "approve-makeup", "reject-makeup", "approve-player-category", "edit-player-category", "delete-expense", "delete-revenue", "delete-guardian", "record-administrative-absence"].includes(action.dataset.action) && currentUser.role !== "coach") {
+  if (["new-session", "edit-session", "delete-session", "take-attendance", "day-off", "code-attendance", "cash-payment", "cash-debt-payment", "new-trainer", "edit-trainer", "trainer-report", "close-trainer-report", "mark-trainer-attendance", "set-trainer-salary", "new-expense", "new-revenue", "instapay-settings", "confirm-payment", "reject-payment", "receipt-preview", "approve-makeup", "reject-makeup", "approve-player-category", "edit-player-category", "delete-expense", "delete-revenue", "delete-guardian", "record-administrative-absence"].includes(action.dataset.action) && currentUser.role !== "coach") {
     showToast("هذا الإجراء متاح لمشرف الأكاديمية فقط.");
     return;
   }
@@ -4993,6 +5205,9 @@ document.addEventListener("click", async event => {
   if (action.dataset.action === "new-trainer") openTrainerForm();
   if (action.dataset.action === "edit-trainer") openTrainerForm(action.dataset.trainer);
   if (action.dataset.action === "mark-trainer-attendance") openTrainerAttendanceForm();
+  if (action.dataset.action === "set-trainer-salary") {
+    openTrainerMonthlySalaryForm(action.dataset.trainer, action.dataset.month);
+  }
   if (action.dataset.action === "trainer-report") {
     selectedTrainerReportId = action.dataset.trainer;
     trainerReportMonth ||= localDateString().slice(0, 7);
@@ -5113,6 +5328,22 @@ document.addEventListener("input", event => {
     });
     const emptyMessage = results?.querySelector(".legacy-player-no-results");
     if (emptyMessage) emptyMessage.hidden = visibleCount > 0;
+  }
+  if (event.target.id === "player-code-search" && currentUser?.role === "coach") {
+    playerCodeSearch = event.target.value;
+    const query = playerCodeSearch.trim().toLocaleLowerCase("ar");
+    const players = [...document.querySelectorAll("#portal-content .player-code-directory-item")];
+    let visibleCount = 0;
+    players.forEach(player => {
+      player.hidden = Boolean(query) && !player.querySelector("strong")?.textContent?.toLocaleLowerCase("ar").includes(query);
+      if (!player.hidden) visibleCount += 1;
+    });
+    const list = document.querySelector("#portal-content .player-code-directory-list");
+    const emptyState = list?.querySelector(".legacy-player-no-results");
+    if (emptyState) {
+      emptyState.textContent = players.length ? "لا توجد نتائج مطابقة." : "لا يوجد لاعبون مسجلون بعد.";
+      emptyState.hidden = visibleCount > 0;
+    }
   }
   if (event.target.id === "coach-player-search" && currentUser?.role === "coach") {
     const query = normalizeDigits(event.target.value.trim()).toLocaleLowerCase("ar");
