@@ -278,15 +278,6 @@ async function unsubscribeUserFromNotifications(profile) {
   foregroundMessageUnsubscribe = null;
 }
 
-function createPlayerCode(existingCodes) {
-  let code;
-  do {
-    code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0");
-  } while (existingCodes.has(code));
-  existingCodes.add(code);
-  return code;
-}
-
 function withoutPassword(record) {
   const { password, __docId, createdAt, updatedAt, ...safeRecord } = record;
   return safeRecord;
@@ -314,15 +305,6 @@ function sessionAllowsPlayer(session, player) {
     || !["male", "female"].includes(player.gender)
     || session.gender === player.gender;
   return categoryMatches && genderMatches;
-}
-
-async function assignedTrainersFor(player) {
-  const sessions = await getDocs(collection(db, "sessions"));
-  return [...new Set(sessions.docs
-    .map(snapshot => snapshot.data())
-    .filter(session => sessionAllowsPlayer(session, player))
-    .map(session => session.coachId)
-    .filter(Boolean))];
 }
 
 function baselineValue(name, record) {
@@ -539,34 +521,24 @@ function academyServices() {
       const credential = await createUserWithEmailAndPassword(auth, guardian.email.trim(), guardian.password);
       try {
         await updateProfile(credential.user, { displayName: guardian.name });
-        const guardianProfile = {
-          ...withoutPassword(guardian),
-          id: credential.user.uid,
-          email: credential.user.email,
-          role: "guardian",
-          joinedAt: guardian.joinedAt
-        };
-        const usedCodes = new Set();
-        const registeredPlayers = players.map(player => ({
-          ...player,
-          guardianId: credential.user.uid,
-          playerCode: createPlayerCode(usedCodes)
-        }));
-        for (const player of registeredPlayers) player.assignedTrainerIds = await assignedTrainersFor(player);
-        await runTransaction(db, async transaction => {
-          const profileRef = doc(db, "users", credential.user.uid);
-          const profileSnapshot = await transaction.get(profileRef);
-          if (profileSnapshot.exists()) throw new Error("هذا الحساب مسجل بالفعل.");
-          const playerRefs = registeredPlayers.map(player => doc(db, "players", player.playerCode));
-          const codeRefs = registeredPlayers.map(player => playerCodeRef(player.playerCode));
-          transaction.set(profileRef, { ...guardianProfile, createdAt: serverTimestamp() });
-          registeredPlayers.forEach((player, index) => {
-            const safePlayer = playerForFirestore(player);
-            transaction.set(playerRefs[index], { ...safePlayer, createdAt: serverTimestamp() });
-            transaction.set(codeRefs[index], { playerId: player.id, playerCode: player.playerCode });
-            baseline.set(`players/${player.playerCode}`, baselineValue("players", safePlayer));
-          });
-          baseline.set(`users/${credential.user.uid}`, baselineValue("users", guardianProfile));
+        const registerAccount = httpsCallable(functions, "registerGuardianAccount");
+        const registration = await registerAccount({
+          guardian: {
+            name: guardian.name,
+            guardianPhone: guardian.guardianPhone,
+            whatsappPhone: guardian.whatsappPhone
+          },
+          players: players.map(player => ({
+            name: player.name,
+            birthDate: player.birthDate,
+            gender: player.gender
+          }))
+        });
+        const guardianProfile = registration.data.profile;
+        const registeredPlayers = registration.data.players;
+        baseline.set(`users/${guardianProfile.id}`, baselineValue("users", guardianProfile));
+        registeredPlayers.forEach(player => {
+          baseline.set(`players/${player.playerCode}`, baselineValue("players", player));
         });
         await openGuardianDeviceSession();
         return { profile: guardianProfile, players: registeredPlayers };
@@ -661,31 +633,20 @@ function academyServices() {
         throw error;
       }
     },
-    async createPlayer(player, existingCodes) {
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        const codes = new Set(existingCodes);
-        const playerCode = createPlayerCode(codes);
-        const playerRef = doc(db, "players", playerCode);
-        const codeRef = playerCodeRef(playerCode);
-        const record = {
-          ...playerForFirestore(player),
-          playerCode,
-          assignedTrainerIds: await assignedTrainersFor(player)
-        };
-        const created = await runTransaction(db, async transaction => {
-          const playerSnapshot = await transaction.get(playerRef);
-          const codeSnapshot = await transaction.get(codeRef);
-          if (playerSnapshot.exists() || codeSnapshot.exists()) return false;
-          transaction.set(playerRef, { ...record, createdAt: serverTimestamp() });
-          transaction.set(codeRef, { playerId: record.id, playerCode });
-          return true;
-        });
-        if (created) {
-          baseline.set(`players/${playerCode}`, baselineValue("players", record));
-          return { ...player, playerCode, assignedTrainerIds: record.assignedTrainerIds };
-        }
+    async createPlayer(player) {
+      if (activeProfile?.role !== "guardian" || activeProfile.id !== auth.currentUser?.uid) {
+        throw new Error("إضافة لاعب متاحة لحساب ولي الأمر المسجل فقط.");
       }
-      throw new Error("تعذر توليد كود فريد للاعب. حاول مرة أخرى.");
+      const createGuardianPlayer = httpsCallable(functions, "createGuardianPlayer");
+      const result = await createGuardianPlayer({
+        name: player.name,
+        birthDate: player.birthDate,
+        gender: player.gender,
+        weeklyDays: player.weeklyDays
+      });
+      const savedPlayer = result.data.player;
+      baseline.set(`players/${savedPlayer.playerCode}`, baselineValue("players", savedPlayer));
+      return { ...player, ...savedPlayer };
     },
     async updatePlayer(player) {
       const playerRef = doc(db, "players", player.playerCode);
@@ -696,6 +657,44 @@ function academyServices() {
         assignedTrainerIds: (await getDoc(playerRef)).data()?.assignedTrainerIds || []
       }));
       return player;
+    },
+    async saveAdministrativeSubscriptionAdjustment(player, payment, profile) {
+      if (!activeProfile || activeProfile.role !== "coach"
+        || activeProfile.id !== auth.currentUser?.uid
+        || !profile || profile.role !== "coach" || profile.id !== activeProfile.id
+        || payment.playerId !== player.id || payment.guardianId !== player.guardianId) {
+        throw new Error("تسجيل تعديل الاشتراك وإيراده متاح للمشرف المسجل فقط.");
+      }
+      const safePlayer = playerForFirestore(player);
+      const safePayment = { ...withoutPassword(payment), createdAt: payment.createdAt };
+      const playerRef = doc(db, "players", player.playerCode);
+      const paymentRef = doc(db, "payments", payment.id);
+      const batch = writeBatch(db);
+      batch.set(playerRef, { ...safePlayer, updatedAt: serverTimestamp() }, { merge: true });
+      batch.set(paymentRef, { ...safePayment, updatedAt: serverTimestamp() }, { merge: true });
+      await batch.commit();
+      baseline.set(`players/${player.playerCode}`, baselineValue("players", safePlayer));
+      baseline.set(`payments/${payment.id}`, baselineValue("payments", safePayment));
+    },
+    async saveTrainerAttendance(records, profile) {
+      if (!activeProfile || activeProfile.role !== "coach"
+        || activeProfile.id !== auth.currentUser?.uid
+        || !profile || profile.role !== "coach" || profile.id !== activeProfile.id
+        || !Array.isArray(records) || !records.length) {
+        throw new Error("حفظ حضور المدربين متاح للمشرف المسجل فقط.");
+      }
+      const batch = writeBatch(db);
+      records.forEach(record => {
+        if (!record.id || !record.trainerId || !record.sessionId || !/^\d{4}-\d{2}-\d{2}$/.test(record.isoDate)) {
+          throw new Error("بيانات سجل حضور التمرين غير مكتملة.");
+        }
+        batch.set(doc(db, "trainerAttendance", record.id), {
+          ...withoutPassword(record),
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+      });
+      await batch.commit();
+      records.forEach(record => baseline.set(`trainerAttendance/${record.id}`, baselineValue("trainerAttendance", record)));
     },
     async currentProfile(user) {
       const { claims } = await user.getIdTokenResult();
@@ -1036,9 +1035,9 @@ function academyServices() {
       const claimReference = hasTransfer
         ? doc(db, "paymentReferenceClaims", await paymentReferenceClaimId(reference))
         : null;
-      const paymentBaselines = submissions.map(({ payment }) => [
+      const paymentBaselines = submissions.map(({ payment, subscription }) => [
         `payments/${payment.id}`,
-        baselineValue("payments", withoutPassword(payment))
+        baselineValue("payments", { ...withoutPassword(payment), playerCode: subscription.playerCode })
       ]);
       try {
         await runTransaction(db, async transaction => {
@@ -1064,6 +1063,7 @@ function academyServices() {
             });
             transaction.set(doc(db, "payments", payment.id), {
               ...safePayment,
+              playerCode: subscription.playerCode,
               createdAt: payment.createdAt,
               updatedAt: serverTimestamp()
             });
@@ -1093,6 +1093,14 @@ function academyServices() {
       const createPlayerPaymentRequest = httpsCallable(functions, "createPlayerPaymentRequest");
       const result = await createPlayerPaymentRequest(request);
       return result.data.payment;
+    },
+    async closeTrainerPayroll(month) {
+      if (activeProfile?.role !== "coach" || activeProfile.id !== auth.currentUser?.uid) {
+        throw new Error("إقفال أجور المدربين متاح للمشرف المسجل فقط.");
+      }
+      const closePayroll = httpsCallable(functions, "closeTrainerPayroll");
+      const result = await closePayroll({ month });
+      return result.data;
     },
     async deleteGuardian(guardian, players) {
       await runTransaction(db, async transaction => {

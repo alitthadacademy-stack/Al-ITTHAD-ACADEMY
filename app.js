@@ -21,6 +21,9 @@ let selectedLegacyPlayerId = null;
 let legacyPlayerSearch = "";
 let guardianReportSearch = "";
 let selectedReportGuardianId = "";
+let selectedTrainerReportId = "";
+let trainerReportMonth = "";
+let trainerAttendanceDate = "";
 let guardianReport = null;
 let guardianReportLoading = false;
 let guardianReportError = "";
@@ -158,7 +161,7 @@ function loadData() {
         ...payment,
         planId: legacyPlanDays[payment.planId] || payment.planId,
         method: payment.method || "instapay",
-        methodLabel: payment.method === "cash" ? "نقدي" : "إنستا باي / محفظة بنكية"
+          methodLabel: payment.methodLabel || (payment.method === "cash" ? "نقدي" : "إنستا باي / محفظة بنكية")
       })) : [],
       attendance: Array.isArray(parsed.attendance) ? parsed.attendance.map(record => ({
         ...record,
@@ -705,6 +708,9 @@ function selectedPlayerStorageKey(guardianId) {
 function signIn(user) {
   currentUser = user;
   viewHistory = [];
+  selectedTrainerReportId = "";
+  trainerReportMonth = "";
+  trainerAttendanceDate = "";
   guardianReportSearch = "";
   selectedReportGuardianId = "";
   guardianReport = null;
@@ -944,7 +950,7 @@ function sessionMatchesMemberDays(session, user) {
 }
 
 function paymentMethodLabel(payment) {
-  return payment.method === "cash" ? "نقدي" : "إنستا باي / محفظة بنكية";
+  return payment.methodLabel || (payment.method === "cash" ? "نقدي" : "إنستا باي / محفظة بنكية");
 }
 
 function isRecordedPayment(payment) {
@@ -1737,12 +1743,20 @@ function trainerScheduleView() {
 
 function coachTrainersView() {
   const trainers = data.users.filter(user => user.role === "trainer");
-  return `<section class="page-intro"><div><p class="eyebrow">فريق الأكاديمية</p><h1>إدارة المدربين</h1><p class="welcome-subtitle">سجّل أسماء المدربين ثم عيّنهم إلى حصص التدريب. لا يحتاج المدرب إلى حساب أو تسجيل دخول.</p></div><button class="primary-button" data-action="new-trainer">＋ إضافة مدرب</button></section><section class="panel">${trainers.length ? `<div class="table-wrap"><table><thead><tr><th>المدرب</th><th>الحصص المسندة</th><th>الحضور اليوم</th></tr></thead><tbody>${trainers.map(trainer => { const sessions = data.sessions.filter(session => session.coachId === trainer.id); const attended = data.trainerAttendance.some(record => record.trainerId === trainer.id && record.isoDate === localDateString() && record.status === "حاضر"); return `<tr><td>${escapeHtml(trainer.name)}</td><td>${arabicDigits(sessions.length)} حصة</td><td><span class="subscription-badge ${attended ? "status-active" : "status-soon"}">${attended ? "حاضر" : "لم يسجل بعد"}</span></td></tr>`; }).join("")}</tbody></table></div>` : '<div class="empty-state"><p>أضف أسماء المدربين لإسنادهم إلى الحصص وتسجيل حضورهم.</p></div>'}</section>`;
+  return `<section class="page-intro"><div><p class="eyebrow">فريق الأكاديمية</p><h1>إدارة المدربين</h1><p class="welcome-subtitle">سجّل أسماء المدربين وأجر كل تمرين، ثم عيّنهم إلى حصص التدريب.</p></div><button class="primary-button" data-action="new-trainer">＋ إضافة مدرب</button></section><section class="panel">${trainers.length ? `<div class="table-wrap"><table><thead><tr><th>المدرب</th><th>التمارين المسندة</th><th>الأجر لكل تمرين</th><th>حالة اليوم</th><th>إجراء</th></tr></thead><tbody>${trainers.map(trainer => { const sessions = data.sessions.filter(session => session.coachId === trainer.id); const todayRecords = data.trainerAttendance.filter(record => record.trainerId === trainer.id && record.isoDate === localDateString() && record.sessionId); const attended = todayRecords.filter(record => record.status === "حاضر").length; const absent = todayRecords.filter(record => record.status === "غائب").length; return `<tr><td>${escapeHtml(trainer.name)}</td><td>${arabicDigits(sessions.length)} تمرين</td><td>${trainer.sessionRate ? `${arabicDigits(trainer.sessionRate)} ج.م` : "حدّد الأجر"}</td><td><span class="subscription-badge ${attended ? "status-active" : absent ? "status-expired" : "status-soon"}">${attended ? `${arabicDigits(attended)} حاضر` : absent ? `${arabicDigits(absent)} غائب` : "لم يسجل بعد"}</span></td><td><button class="small-action" data-action="edit-trainer" data-trainer="${escapeHtml(trainer.id)}">تعديل المدرب والأجر</button><button class="small-action" data-action="trainer-report" data-trainer="${escapeHtml(trainer.id)}">كشف الحضور</button></td></tr>`; }).join("")}</tbody></table></div>` : '<div class="empty-state"><p>أضف أسماء المدربين لإسنادهم إلى الحصص وتسجيل حضورهم.</p></div>'}</section>`;
 }
 
-function openTrainerForm() {
+function openTrainerForm(trainerId = "") {
   if (currentUser?.role !== "coach") { showToast("إدارة حسابات المدربين من صلاحية المشرف فقط."); return; }
-  openModal("إضافة مدرب", `<label>اسم المدرب<input name="name" required minlength="2" maxlength="80" placeholder="اسم المدرب بالكامل"></label><p class="modal-explainer">سيُضاف الاسم إلى قائمة المدربين ويمكن اختياره عند إعداد جدول التدريب. لا يلزم بريد إلكتروني أو حساب دخول للمدرب.</p>`, "حفظ اسم المدرب", form => saveTrainer(form), "إدارة المدربين");
+  const trainer = trainerId ? data.users.find(user => user.id === trainerId && user.role === "trainer") : null;
+  if (trainerId && !trainer) { showToast("لم يتم العثور على المدرب."); return; }
+  openModal(
+    trainer ? `تعديل بيانات ${trainer.name}` : "إضافة مدرب",
+    `<input type="hidden" name="trainerId" value="${escapeHtml(trainer?.id || "")}"><label>اسم المدرب<input name="name" required minlength="2" maxlength="80" value="${escapeHtml(trainer?.name || "")}" placeholder="اسم المدرب بالكامل"></label><label>الأجر عن كل تمرين/حصة بالجنيه<input name="sessionRate" type="number" min="0.01" step="0.01" required value="${Number(trainer?.sessionRate || 0) || ""}" placeholder="مثال: ١٥٠"></label><p class="modal-explainer">يُحتسب الأجر عن كل تمرين مسند يسجل المشرف حضوره للمدرب. يُحفظ سعر كل حصة في سجل حضورها لتثبيت أجر الشهر. لا يلزم للمدرب بريد إلكتروني أو حساب دخول.</p>`,
+    trainer ? "حفظ بيانات المدرب" : "حفظ اسم المدرب",
+    form => saveTrainer(form),
+    "إدارة المدربين"
+  );
 }
 
 function openPlayerForm() {
@@ -1893,9 +1907,11 @@ function openSubscriptionOverride(playerId) {
   if (!player) { showToast("لم يتم العثور على اللاعب."); return; }
   const startDate = player.subscriptionStart || player.actualStartDate || player.expectedStartDate || localDateString();
   const endDate = player.endDate || player.subscriptionEnd || "";
+  const dayCount = Math.max(1, Math.min(7, Number(player.weeklyDaysCount || player.weeklyDays?.length || 1)));
+  const subscriptionAmount = subscriptionPrice(dayCount);
   openModal(
     `تعديل اشتراك ${player.name}`,
-    `<p class="modal-explainer">هذا الإجراء مخصص للاشتراكات السابقة لإطلاق المنصة أو للتصحيح الإداري. أدخل التدريبات المنجزة سابقًا والرصيد الحالي؛ لن يُنشأ سجل دفع.</p><label>عدد التمارين المنجزة قبل المنصة<input name="attendedBeforePlatform" type="number" min="0" max="500" step="1" value="${Number(player.subscriptionOverride?.attendedBeforePlatform ?? player.sessionsUsed ?? 0)}" required></label><label>عدد التمارين المتبقية حاليًا<input name="remainingSessions" type="number" min="0" max="500" step="1" value="${Number(player.sessionsLeft ?? 0)}" required></label><div class="form-row"><label>تاريخ بدء الاشتراك<input name="subscriptionStart" type="date" value="${escapeHtml(startDate)}" required></label><label>تاريخ انتهاء الاشتراك<input name="subscriptionEnd" type="date" value="${escapeHtml(endDate)}" required></label></div>`,
+    `<p class="modal-explainer">هذا الإجراء مخصص للاشتراكات السابقة لإطلاق المنصة أو للتصحيح الإداري. عند الحفظ، يُسجّل النظام تلقائيًا إيرادًا مؤكدًا بقيمة الباقة الشهرية الحالية (${arabicDigits(subscriptionAmount)} ج.م)، ويُدرجه في شهر تاريخ بداية الاشتراك. تعديل الاشتراك بالتاريخ نفسه يحدّث سجل الإيراد بدل تكراره.</p><label>عدد التمارين المنجزة قبل المنصة<input name="attendedBeforePlatform" type="number" min="0" max="500" step="1" value="${Number(player.subscriptionOverride?.attendedBeforePlatform ?? player.sessionsUsed ?? 0)}" required></label><label>عدد التمارين المتبقية حاليًا<input name="remainingSessions" type="number" min="0" max="500" step="1" value="${Number(player.sessionsLeft ?? 0)}" required></label><div class="form-row"><label>تاريخ بدء الاشتراك<input name="subscriptionStart" type="date" value="${escapeHtml(startDate)}" required></label><label>تاريخ انتهاء الاشتراك<input name="subscriptionEnd" type="date" value="${escapeHtml(endDate)}" required></label></div>`,
     "حفظ تعديل الاشتراك",
     form => saveSubscriptionOverride(form, player.id),
     "إدارة اللاعبين"
@@ -1912,11 +1928,17 @@ async function saveSubscriptionOverride(form, playerId) {
   const remainingSessions = Number(remainingValue);
   const subscriptionStart = String(form.get("subscriptionStart") || "");
   const subscriptionEnd = String(form.get("subscriptionEnd") || "");
+  const dayCount = Math.max(1, Math.min(7, Number(player.weeklyDaysCount || player.weeklyDays?.length || 1)));
+  const subscriptionAmount = subscriptionPrice(dayCount);
   if (!/^\d+$/.test(attendedValue) || !Number.isInteger(attendedBeforePlatform) || attendedBeforePlatform > 500
     || !/^\d+$/.test(remainingValue) || !Number.isInteger(remainingSessions) || remainingSessions > 500
     || !isValidIsoDate(subscriptionStart) || !isValidIsoDate(subscriptionEnd)
     || subscriptionEnd < subscriptionStart || attendedBeforePlatform + remainingSessions === 0) {
     showToast("تحقق من عدد التمارين (0–500) وتواريخ الاشتراك، ويجب أن يكون مجموع التمارين أكبر من صفر.");
+    return;
+  }
+  if (!isValidCurrencyAmount(subscriptionAmount) || subscriptionAmount <= 0) {
+    showToast("سعر الباقة الحالي غير صالح؛ راجع إعدادات الأسعار قبل تعديل الاشتراك.");
     return;
   }
   const previous = { ...player };
@@ -1949,18 +1971,54 @@ async function saveSubscriptionOverride(form, playerId) {
     `${previousBalance.used} حاضر · ${previousBalance.remaining} متبقي · ${previousSubscription}`,
     `${attendedBeforePlatform} حاضر · ${remainingSessions} متبقي · ${subscriptionStart} – ${subscriptionEnd}`
   );
+  const confirmedAt = new Date(`${subscriptionStart}T12:00:00`).getTime();
+  const existingPaymentIndex = data.payments.findIndex(item =>
+    item.playerId === player.id
+      && item.administrativeSubscriptionAdjustment === true
+      && item.subscriptionStart === subscriptionStart
+  );
+  const previousPayment = existingPaymentIndex >= 0
+    ? { ...data.payments[existingPaymentIndex] }
+    : null;
+  const payment = {
+    id: previousPayment?.id || crypto.randomUUID(),
+    guardianId: player.guardianId,
+    playerId: player.id,
+    playerName: player.name,
+    planId: dayCount,
+    planName: priceSummary(dayCount).plan.name,
+    subscriptionDuration: "full",
+    subscriptionStart,
+    amount: subscriptionAmount,
+    method: "admin-adjustment",
+    methodLabel: "تعديل إداري للاشتراك",
+    reference: "إيراد اشتراك مسجل إداريًا",
+    status: "تم الدفع نقدًا",
+    date: egyptianDate.format(new Date(confirmedAt)),
+    createdAt: confirmedAt,
+    confirmedAt,
+    administrativeSubscriptionAdjustment: true
+  };
+  if (existingPaymentIndex >= 0) data.payments[existingPaymentIndex] = payment;
+  else data.payments.push(payment);
   if (!saveLocalData()) {
     Object.assign(player, previous);
+    if (previousPayment) data.payments[existingPaymentIndex] = previousPayment;
+    else data.payments.splice(data.payments.findIndex(item => item.id === payment.id), 1);
     return;
   }
   try {
     const firebase = await window.firebaseReady;
-    await firebase.updatePlayer(player);
+    await cloudWriteQueue;
+    await firebase.saveAdministrativeSubscriptionAdjustment(player, payment, cloudProfile);
     closeModal();
     renderView();
-    showToast(`تم تحديث اشتراك ${player.name}: ${attendedBeforePlatform} تمرينًا منجزًا و${remainingSessions} متبقيًا.`);
+    showToast(`تم تحديث اشتراك ${player.name} وتسجيل إيراد ${arabicDigits(subscriptionAmount)} ج.م في شهر ${subscriptionStart.slice(0, 7)}.`);
   } catch (error) {
     Object.assign(player, previous);
+    const paymentIndex = data.payments.findIndex(item => item.id === payment.id);
+    if (previousPayment && paymentIndex >= 0) data.payments[paymentIndex] = previousPayment;
+    else if (paymentIndex >= 0) data.payments.splice(paymentIndex, 1);
     saveLocalData();
     console.error("تعذر حفظ تعديل الاشتراك الإداري في Firestore.", error);
     showToast(error instanceof Error ? `تعذر حفظ تعديل الاشتراك: ${error.message}` : "تعذر حفظ تعديل الاشتراك.");
@@ -1970,70 +2028,185 @@ async function saveSubscriptionOverride(form, playerId) {
 async function saveTrainer(form) {
   if (currentUser?.role !== "coach") { showToast("إضافة المدربين متاحة للمشرف فقط."); return; }
   const name = String(form.get("name")).trim().replace(/\s+/g, " ");
+  const sessionRate = Number(form.get("sessionRate"));
   if (name.length < 2 || name.length > 80) { showToast("أدخل اسمًا صحيحًا للمدرب."); return; }
-  if (data.users.some(user => user.role === "trainer" && user.name.trim().toLocaleLowerCase("ar") === name.toLocaleLowerCase("ar"))) {
+  if (!isValidCurrencyAmount(sessionRate) || sessionRate <= 0) { showToast("أدخل أجرًا صحيحًا أكبر من صفر لكل تمرين."); return; }
+  const trainerId = String(form.get("trainerId") || "");
+  if (data.users.some(user => user.role === "trainer" && user.id !== trainerId && user.name.trim().toLocaleLowerCase("ar") === name.toLocaleLowerCase("ar"))) {
     showToast("هذا الاسم مسجل بالفعل ضمن المدربين.");
     return;
   }
-  const trainer = { id: crypto.randomUUID(), role: "trainer", name, joinedAt: new Date().toISOString() };
-  data.users.push(trainer);
+  const existing = trainerId ? data.users.find(user => user.id === trainerId && user.role === "trainer") : null;
+  if (trainerId && !existing) { showToast("لم يتم العثور على المدرب المطلوب."); return; }
+  const previous = existing ? { ...existing } : null;
+  const assignedSessions = existing ? data.sessions.filter(session => session.coachId === existing.id) : [];
+  const previousSessionNames = assignedSessions.map(session => session.coach);
+  const trainer = { ...(existing || {}), id: existing?.id || crypto.randomUUID(), role: "trainer", name, sessionRate, joinedAt: existing?.joinedAt || new Date().toISOString() };
+  if (existing) Object.assign(existing, trainer);
+  else data.users.push(trainer);
+  assignedSessions.forEach(session => { session.coach = name; });
   if (!saveData()) {
-    data.users.pop();
+    if (existing) Object.assign(existing, previous);
+    else data.users.pop();
+    assignedSessions.forEach((session, index) => { session.coach = previousSessionNames[index]; });
     return;
   }
   closeModal();
   activeView = "trainers";
   renderView();
-  showToast(`تمت إضافة المدرب ${name}.`);
+  showToast(existing ? `تم تحديث بيانات المدرب ${name} وأجر التمرين.` : `تمت إضافة المدرب ${name}.`);
 }
 
 function supervisorTrainerAttendanceView() {
   const trainers = data.users.filter(user => user.role === "trainer");
-  const isoDate = localDateString();
+  const isoDate = trainerAttendanceDate || localDateString();
+  const sessionsForDate = data.sessions.filter(session => sessionDays(session).includes(weekdayForDate(isoDate)));
   const records = data.trainerAttendance.filter(record => record.isoDate === isoDate);
-  return `<section class="page-intro"><div><p class="eyebrow">سجل الجهاز الفني</p><h1>حضور المدربين</h1><p class="welcome-subtitle">سجل حضور وانصراف المدربين يوميًا بصلاحية المشرف.</p></div><button class="primary-button" data-action="mark-trainer-attendance">تسجيل حضور اليوم</button></section><section class="panel"><div class="panel-heading"><div><h2>حالة اليوم</h2><p>${egyptianDate.format(new Date())} · ${arabicDigits(records.filter(record => record.status === "حاضر").length)} من ${arabicDigits(trainers.length)} مدرب</p></div></div>${trainers.length ? `<div class="table-wrap"><table><thead><tr><th>المدرب</th><th>الحالة</th><th>وقت التسجيل</th></tr></thead><tbody>${trainers.map(trainer => { const record = records.find(item => item.trainerId === trainer.id); return `<tr><td>${escapeHtml(trainer.name)}</td><td><span class="subscription-badge ${record?.status === "حاضر" ? "status-active" : "status-expired"}">${escapeHtml(record?.status || "لم يسجل")}</span></td><td>${escapeHtml(record?.checkInAt || "—")}</td></tr>`; }).join("")}</tbody></table></div>` : '<div class="empty-state"><p>أضف حسابات المدربين قبل تسجيل الحضور.</p></div>'}</section>`;
+  const trainerRows = trainers.map(trainer => {
+    const assignedSessions = sessionsForDate.filter(session => session.coachId === trainer.id);
+    const present = assignedSessions.filter(session => records.some(record =>
+      record.trainerId === trainer.id && record.sessionId === session.id && record.status === "حاضر"
+    )).length;
+    const absent = assignedSessions.filter(session => records.some(record =>
+      record.trainerId === trainer.id && record.sessionId === session.id && record.status === "غائب"
+    )).length;
+    const status = present ? "حاضر" : absent ? "غائب" : "لم يسجل";
+    return `<tr><td>${escapeHtml(trainer.name)}<small class="table-subtext">${arabicDigits(assignedSessions.length)} تمرين مسند في هذا اليوم</small></td><td><span class="subscription-badge ${present ? "status-active" : absent ? "status-expired" : "status-soon"}">${status}</span><small class="table-subtext">${arabicDigits(present)} حاضر · ${arabicDigits(absent)} غائب</small><div><button class="small-action" data-action="trainer-report" data-trainer="${escapeHtml(trainer.id)}" aria-label="كشف حضور وأجر ${escapeHtml(trainer.name)}" title="كشف الحضور والأجر">📊</button></div></td><td>${arabicDigits(Number(trainer.sessionRate) || 0)} ج.م / تمرين</td></tr>`;
+  }).join("");
+  const selectedTrainer = trainers.find(trainer => trainer.id === selectedTrainerReportId);
+  let report = "";
+  if (selectedTrainer) {
+    const month = trainerReportMonth || localDateString().slice(0, 7);
+    const monthRecords = data.trainerAttendance.filter(record =>
+      record.trainerId === selectedTrainer.id && record.isoDate?.slice(0, 7) === month && record.sessionId
+    ).sort((left, right) => left.isoDate.localeCompare(right.isoDate) || String(left.sessionTitle).localeCompare(String(right.sessionTitle), "ar"));
+    const presentRecords = monthRecords.filter(record => record.status === "حاضر");
+    const absentRecords = monthRecords.filter(record => record.status === "غائب");
+    const totalPay = presentRecords.reduce((sum, record) => sum + Number(record.sessionRate || 0), 0);
+    const reportSessions = new Map(data.sessions
+      .filter(session => session.coachId === selectedTrainer.id)
+      .map(session => [session.id, session]));
+    monthRecords.forEach(record => {
+      if (!reportSessions.has(record.sessionId)) reportSessions.set(record.sessionId, record);
+    });
+    const sessions = [...reportSessions.entries()].map(([sessionId, session]) => {
+      const sessionRecords = monthRecords.filter(record => record.sessionId === sessionId);
+      const title = session.title || session.sessionTitle || "تمرين";
+      const recordedRates = [...new Set(sessionRecords.map(record => Number(record.sessionRate)).filter(rate => rate > 0))];
+      const rateLabel = recordedRates.length > 1
+        ? `${arabicDigits(Math.min(...recordedRates))}–${arabicDigits(Math.max(...recordedRates))}`
+        : arabicDigits(recordedRates[0] || Number(selectedTrainer.sessionRate) || 0);
+      const attendedDays = sessionRecords.filter(record => record.status === "حاضر").map(record => record.isoDate);
+      const absentDays = sessionRecords.filter(record => record.status === "غائب").map(record => record.isoDate);
+      const sessionTotal = sessionRecords.filter(record => record.status === "حاضر")
+        .reduce((sum, record) => sum + Number(record.sessionRate || 0), 0);
+      return `<tr><td>${escapeHtml(title)}<small class="table-subtext">${escapeHtml(session.sessionTime || session.time || "")}</small></td><td>${attendedDays.length ? attendedDays.map(escapeHtml).join("، ") : "—"}</td><td>${absentDays.length ? absentDays.map(escapeHtml).join("، ") : "—"}</td><td>${rateLabel} ج.م</td><td>${arabicDigits(sessionTotal)} ج.م</td></tr>`;
+    }).join("");
+    report = `<section class="panel"><div class="panel-heading"><div><h2>كشف ${escapeHtml(selectedTrainer.name)}</h2><p>الحضور والغياب والأجر عن كل تمرين</p></div><button type="button" class="small-action" data-action="close-trainer-report">إغلاق الكشف</button></div><label>الشهر<input id="trainer-report-month" type="month" value="${escapeHtml(month)}"></label><div class="member-stats"><article class="member-stat"><p>تمارين حضرها</p><strong>${arabicDigits(presentRecords.length)}</strong></article><article class="member-stat"><p>تمارين غابها</p><strong>${arabicDigits(absentRecords.length)}</strong></article><article class="member-stat"><p>الأجر المستحق لهذا الشهر</p><strong>${arabicDigits(totalPay)} ج.م</strong></article></div>${sessions.length ? `<div class="table-wrap"><table><thead><tr><th>التمرين المسند</th><th>أيام الحضور</th><th>أيام الغياب</th><th>أجر التمرين</th><th>الإجمالي</th></tr></thead><tbody>${sessions}</tbody></table></div>` : '<div class="empty-state"><p>لا توجد تمارين مسندة لهذا المدرب.</p></div>'}<p class="form-note">الأيام التي لم تُسجّل لا تُحسب حضورًا أو غيابًا، ولا تدخل في الأجر حتى يحدد المشرف حالتها.</p></section>`;
+  }
+  return `<section class="page-intro"><div><p class="eyebrow">سجل الجهاز الفني</p><h1>حضور المدربين</h1><p class="welcome-subtitle">سجّل حضور أو غياب كل تمرين مسند، وتابع الأجر الشهري. يُقفل كشف الأجور تلقائيًا في بداية الشهر التالي.</p></div><button class="primary-button" data-action="mark-trainer-attendance">تسجيل حضور الحصص</button></section><section class="panel"><div class="panel-heading"><div><h2>حالة اليوم</h2><p>${egyptianDate.format(new Date(`${isoDate}T12:00:00`))}</p></div><label>التاريخ<input id="trainer-attendance-date" type="date" value="${escapeHtml(isoDate)}" max="${localDateString()}"></label></div>${trainers.length ? `<div class="table-wrap"><table><thead><tr><th>المدرب</th><th>حالة تمارينه</th><th>الأجر لكل تمرين</th></tr></thead><tbody>${trainerRows}</tbody></table></div>` : '<div class="empty-state"><p>أضف المدربين وأسند إليهم التمارين من صفحة الجدول.</p></div>'}</section>${report}`;
 }
 
 function openTrainerAttendanceForm() {
   if (currentUser?.role !== "coach") { showToast("تسجيل حضور المدربين من صلاحية المشرف فقط."); return; }
-  const trainers = data.users.filter(user => user.role === "trainer");
-  if (!trainers.length) { showToast("أضف حسابات المدربين أولًا."); return; }
-  const today = localDateString();
+  const attendanceDate = trainerAttendanceDate || localDateString();
+  const weekday = weekdayForDate(attendanceDate);
+  const sessions = data.sessions.filter(session => sessionDays(session).includes(weekday));
+  if (!sessions.length) { showToast(`لا توجد تمارين مجدولة يوم ${weekday}. راجع الأيام وإسناد المدرب في الجدول.`); return; }
+  if (attendanceDate > localDateString()) { showToast("لا يمكن تسجيل حضور أو غياب بتاريخ مستقبلي."); return; }
   const now = new Date();
   const timeNow = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-  const rows = trainers.map(trainer => {
-    const existing = data.trainerAttendance.find(record => record.trainerId === trainer.id && record.isoDate === today);
-    return `<div class="roster-row"><div><strong>${escapeHtml(trainer.name)}</strong><small>${existing ? `الحالة المسجلة: ${escapeHtml(existing.status)}` : "لم يسجل حضور اليوم"}</small></div><select name="trainer-status-${escapeHtml(trainer.id)}"><option value="حاضر" ${existing?.status === "حاضر" ? "selected" : ""}>حاضر</option><option value="غائب" ${existing?.status === "غائب" ? "selected" : ""}>غائب</option></select><label>وقت الحضور<input name="trainer-time-${escapeHtml(trainer.id)}" type="time" value="${escapeHtml(existing?.checkInAt || timeNow)}"></label></div>`;
+  const rows = sessions.map(session => {
+    const trainer = data.users.find(user => user.id === session.coachId && user.role === "trainer");
+    if (!trainer) return "";
+    const existing = data.trainerAttendance.find(record =>
+      record.trainerId === trainer.id && record.sessionId === session.id && record.isoDate === attendanceDate
+    );
+    return `<div class="roster-row"><div><strong>${escapeHtml(trainer.name)}</strong><small>${escapeHtml(session.title)} · ${escapeHtml(sessionTimeRange(session))} · ${arabicDigits(Number(trainer.sessionRate) || 0)} ج.م</small></div><select name="trainer-status-${escapeHtml(session.id)}" required><option value="">اختر الحالة</option><option value="حاضر" ${existing?.status === "حاضر" ? "selected" : ""}>حاضر</option><option value="غائب" ${existing?.status === "غائب" ? "selected" : ""}>غائب</option></select><label>وقت الحضور<input name="trainer-time-${escapeHtml(session.id)}" type="time" value="${escapeHtml(existing?.checkInAt || timeNow)}" ${existing?.status === "غائب" ? "disabled" : ""}></label></div>`;
   }).join("");
-  openModal("تسجيل حضور المدربين", `<label>تاريخ الحضور<input type="date" name="attendanceDate" value="${today}" required></label><div class="roster-list">${rows}</div>`, "حفظ حضور المدربين", form => saveTrainerAttendance(form), "إدارة المدربين");
+  openModal("تسجيل حضور وغياب التمارين المسندة", `<p class="modal-explainer">اختر حاضرًا أو غائبًا لكل تمرين مسند لهذا اليوم. الأجر يُحتسب للحضور فقط. الأيام التي لم تُسجّل لا تُعتبر غيابًا.</p><input type="hidden" name="attendanceDate" value="${escapeHtml(attendanceDate)}"><div class="roster-list">${rows}</div>`, "حفظ حالات التمارين", form => saveTrainerAttendance(form), "إدارة المدربين");
 }
 
-function saveTrainerAttendance(form) {
+async function saveTrainerAttendance(form) {
   if (currentUser?.role !== "coach") { showToast("تسجيل حضور المدربين من صلاحية المشرف فقط."); return; }
   const isoDate = String(form.get("attendanceDate"));
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate) || Number.isNaN(new Date(`${isoDate}T12:00:00`).getTime())) { showToast("أدخل تاريخًا صحيحًا."); return; }
+  if (!isValidIsoDate(isoDate) || isoDate > localDateString()) { showToast("أدخل تاريخًا صحيحًا غير مستقبلي."); return; }
+  const sessions = data.sessions.filter(session => sessionDays(session).includes(weekdayForDate(isoDate)));
+  const entries = sessions.map(session => {
+    const trainer = data.users.find(user => user.id === session.coachId && user.role === "trainer");
+    if (!trainer) return null;
+    const status = String(form.get(`trainer-status-${session.id}`) || "");
+    if (!["حاضر", "غائب"].includes(status)) return null;
+    const rate = Number(trainer.sessionRate);
+    if (!isValidCurrencyAmount(rate) || rate <= 0) throw new Error(`أدخل أجرًا صحيحًا لكل تمرين للمدرب ${trainer.name} قبل حفظ الحضور.`);
+    return {
+      trainer,
+      session,
+      status,
+      rate,
+      checkInAt: status === "حاضر" ? String(form.get(`trainer-time-${session.id}`) || "") : "",
+      existing: data.trainerAttendance.find(record =>
+        record.trainerId === trainer.id && record.sessionId === session.id && record.isoDate === isoDate
+      )
+    };
+  }).filter(Boolean);
   const changes = [];
-  data.users.filter(user => user.role === "trainer").forEach(trainer => {
-    const status = String(form.get(`trainer-status-${trainer.id}`));
-    if (!["حاضر", "غائب"].includes(status)) return;
-    const checkInAt = String(form.get(`trainer-time-${trainer.id}`) || "");
-    const existing = data.trainerAttendance.find(record => record.trainerId === trainer.id && record.isoDate === isoDate);
-    if (existing) {
-      changes.push({ record: existing, previous: { ...existing } });
-      Object.assign(existing, { trainerName: trainer.name, status, checkInAt, timestamp: new Date(`${isoDate}T${checkInAt || "00:00"}:00`).getTime() });
-    } else {
-      const record = { id: crypto.randomUUID(), trainerId: trainer.id, trainerName: trainer.name, isoDate, status, checkInAt, timestamp: new Date(`${isoDate}T${checkInAt || "00:00"}:00`).getTime() };
-      data.trainerAttendance.push(record);
-      changes.push({ record, added: true });
-    }
+  entries.forEach(({ trainer, session, status, rate, checkInAt, existing }) => {
+    const previous = existing ? { ...existing } : null;
+    const record = {
+      ...(existing || {}),
+      id: existing?.id || `${trainer.id}_${session.id}_${isoDate}`,
+      trainerId: trainer.id,
+      trainerName: trainer.name,
+      sessionId: session.id,
+      sessionTitle: session.title,
+      sessionTime: session.time || "",
+      isoDate,
+      status,
+      checkInAt,
+      sessionRate: Number(existing?.sessionRate) > 0 ? Number(existing.sessionRate) : rate,
+      timestamp: new Date(`${isoDate}T${checkInAt || "00:00"}:00`).getTime()
+    };
+    if (existing) Object.assign(existing, record);
+    else data.trainerAttendance.push(record);
+    changes.push({ record, previous });
   });
-  if (!changes.length) { showToast("لا توجد حالات حضور لتسجيلها."); return; }
-  if (saveData()) { closeModal(); renderView(); showToast("تم حفظ سجل حضور المدربين."); }
-  else {
-    changes.forEach(change => {
-      if (change.added) data.trainerAttendance.splice(data.trainerAttendance.indexOf(change.record), 1);
-      else Object.assign(change.record, change.previous);
+  if (!changes.length) { showToast("لا توجد تمارين مسندة لتسجيلها في هذا التاريخ."); return; }
+  if (!saveLocalData()) {
+    changes.forEach(({ record, previous }) => {
+      if (previous) Object.assign(record, previous);
+      else data.trainerAttendance.splice(data.trainerAttendance.indexOf(record), 1);
     });
+    return;
+  }
+  let attendanceSaved = false;
+  try {
+    await cloudWriteQueue;
+    const firebase = await window.firebaseReady;
+    await firebase.saveTrainerAttendance(changes.map(({ record }) => record), cloudProfile);
+    attendanceSaved = true;
+    const month = isoDate.slice(0, 7);
+    if (month < localDateString().slice(0, 7)) {
+      await firebase.closeTrainerPayroll(month);
+    }
+    closeModal();
+    renderView();
+    showToast("تم حفظ حضور وغياب كل تمرين، وتحديث مصروف الشهر إذا كان قد أُقفل.");
+  } catch (error) {
+    if (!attendanceSaved) {
+      changes.forEach(({ record, previous }) => {
+        if (previous) Object.assign(record, previous);
+        else data.trainerAttendance.splice(data.trainerAttendance.indexOf(record), 1);
+      });
+      saveLocalData();
+    } else {
+      closeModal();
+      renderView();
+    }
+    console.error("تعذر تحديث مصروف أجور المدربين.", error);
+    showToast(error instanceof Error
+      ? `${attendanceSaved ? "تم حفظ الحضور لكن تعذر تحديث مصروف الأجر" : "تعذر حفظ الحضور"}: ${error.message}`
+      : attendanceSaved ? "تم حفظ الحضور لكن تعذر تحديث مصروف الأجر." : "تعذر حفظ حضور المدربين.");
   }
 }
 
@@ -2058,9 +2231,9 @@ function financeView() {
   const rows = [
     ...monthPayments.map(payment => ({ date: paymentDate(payment), title: `${payment.status === "سداد مديونية نقدية" ? `سداد مديونية ${payment.playerName}` : `اشتراك ${payment.playerName}`} · ${paymentMethodLabel(payment)}${payment.siblingDiscount ? ` · خصم إخوة ${arabicDigits(payment.siblingDiscount)} ج.م` : ""}${payment.specialDiscountAmount ? ` · خصم استثنائي ${arabicDigits(payment.specialDiscountAmount)} ج.م` : ""}${payment.debtAddedAmount ? ` · مديونية ${arabicDigits(payment.debtAddedAmount)} ج.م` : ""} · ${payment.paidTime || ""}`, amount: Number(payment.amount || 0), type: "إيراد" })),
     ...monthRevenues.map(revenue => ({ date: revenue.date, title: revenue.description, amount: Number(revenue.amount || 0), type: "إيراد", revenueId: revenue.id })),
-    ...monthExpenses.map(expense => ({ date: expense.date, title: expense.description, amount: Number(expense.amount || 0), type: "مصروف", expenseId: expense.id }))
+    ...monthExpenses.map(expense => ({ date: expense.date, title: expense.description, amount: Number(expense.amount || 0), type: "مصروف", expenseId: expense.id, monthlyPayroll: expense.monthlyPayroll === true }))
   ].sort((a, b) => b.date.localeCompare(a.date));
-  return `<section class="page-intro"><div><p class="eyebrow">حسابات الأكاديمية</p><h1>الإيرادات والمصروفات</h1><p class="welcome-subtitle">الإيرادات تشمل الاشتراكات المؤكدة والإيرادات اليدوية؛ التحويلات قيد المراجعة لا تُحتسب.</p></div><div class="finance-actions"><button class="primary-button" data-action="new-revenue"><span>＋</span> تسجيل إيراد</button><button class="finance-expense-button" data-action="new-expense"><span>−</span> تسجيل مصروف</button></div></section><section class="finance-filter"><label>الشهر المعروض<input id="finance-month" type="month" value="${escapeHtml(month)}"></label></section><section class="member-stats coach-stats finance-stats"><article class="member-stat"><p>إيرادات هذا الشهر</p><strong>${arabicDigits(filteredIncomeTotal)} ج.م</strong><small>${arabicDigits(monthPayments.length + monthRevenues.length)} دفعة وإيراد</small></article><article class="member-stat"><p>مصروفات هذا الشهر</p><strong>${arabicDigits(filteredExpensesTotal)} ج.م</strong><small>${arabicDigits(monthExpenses.length)} مصروف</small></article><article class="member-stat"><p>صافي هذا الشهر</p><strong class="finance-net ${monthlyNet < 0 ? "negative" : ""}"><bdi dir="ltr">${arabicDigits(monthlyNet)}</bdi> ج.م</strong><small>إيرادات الشهر ناقص مصروفاته</small></article><article class="member-stat"><p>صافي الربح منذ البداية</p><strong class="finance-net ${lifetimeNet < 0 ? "negative" : ""}"><bdi dir="ltr">${arabicDigits(lifetimeNet)}</bdi> ج.م</strong><small>الإيرادات ${arabicDigits(totalIncome)} − المصروفات ${arabicDigits(totalExpenses)}</small></article></section><section class="panel"><div class="panel-heading"><div><h2>حركة الشهر</h2><p>الإيرادات المسجلة والمصروفات حسب التاريخ</p></div></div>${rows.length ? `<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>البيان</th><th>النوع</th><th>المبلغ</th><th>إجراء</th></tr></thead><tbody>${rows.map(row => `<tr><td>${escapeHtml(row.date)}</td><td>${escapeHtml(row.title)}</td><td><span class="subscription-badge ${row.type === "إيراد" ? "status-active" : "status-expired"}">${row.type}</span></td><td>${arabicDigits(row.amount)} ج.م</td><td>${row.expenseId ? `<button class="small-action" data-action="delete-expense" data-expense="${escapeHtml(row.expenseId)}">حذف المصروف</button>` : row.revenueId ? `<button class="small-action" data-action="delete-revenue" data-revenue="${escapeHtml(row.revenueId)}">حذف الإيراد</button>` : "—"}</td></tr>`).join("")}</tbody></table></div>` : '<div class="empty-state"><p>لا توجد حركات مالية في هذا الشهر.</p></div>'}</section>`;
+  return `<section class="page-intro"><div><p class="eyebrow">حسابات الأكاديمية</p><h1>الإيرادات والمصروفات</h1><p class="welcome-subtitle">الإيرادات تشمل الاشتراكات المؤكدة والإيرادات اليدوية؛ التحويلات قيد المراجعة لا تُحتسب. مصروف أجور المدربين يُضاف تلقائيًا عند إقفال الشهر.</p></div><div class="finance-actions"><button class="primary-button" data-action="new-revenue"><span>＋</span> تسجيل إيراد</button><button class="finance-expense-button" data-action="new-expense"><span>−</span> تسجيل مصروف</button></div></section><section class="finance-filter"><label>الشهر المعروض<input id="finance-month" type="month" value="${escapeHtml(month)}"></label></section><section class="member-stats coach-stats finance-stats"><article class="member-stat"><p>إيرادات هذا الشهر</p><strong>${arabicDigits(filteredIncomeTotal)} ج.م</strong><small>${arabicDigits(monthPayments.length + monthRevenues.length)} دفعة وإيراد</small></article><article class="member-stat"><p>مصروفات هذا الشهر</p><strong>${arabicDigits(filteredExpensesTotal)} ج.م</strong><small>${arabicDigits(monthExpenses.length)} مصروف</small></article><article class="member-stat"><p>صافي هذا الشهر</p><strong class="finance-net ${monthlyNet < 0 ? "negative" : ""}"><bdi dir="ltr">${arabicDigits(monthlyNet)}</bdi> ج.م</strong><small>إيرادات الشهر ناقص مصروفاته</small></article><article class="member-stat"><p>صافي الربح منذ البداية</p><strong class="finance-net ${lifetimeNet < 0 ? "negative" : ""}"><bdi dir="ltr">${arabicDigits(lifetimeNet)}</bdi> ج.م</strong><small>الإيرادات ${arabicDigits(totalIncome)} − المصروفات ${arabicDigits(totalExpenses)}</small></article></section><section class="panel"><div class="panel-heading"><div><h2>حركة الشهر</h2><p>الإيرادات المسجلة والمصروفات حسب التاريخ</p></div></div>${rows.length ? `<div class="table-wrap"><table><thead><tr><th>التاريخ</th><th>البيان</th><th>النوع</th><th>المبلغ</th><th>إجراء</th></tr></thead><tbody>${rows.map(row => `<tr><td>${escapeHtml(row.date)}</td><td>${escapeHtml(row.title)}${row.monthlyPayroll ? '<small class="table-subtext">مصروف آلي · يُعاد حسابه من الحضور</small>' : ""}</td><td><span class="subscription-badge ${row.type === "إيراد" ? "status-active" : "status-expired"}">${row.type}</span></td><td>${arabicDigits(row.amount)} ج.م</td><td>${row.expenseId && !row.monthlyPayroll ? `<button class="small-action" data-action="delete-expense" data-expense="${escapeHtml(row.expenseId)}">حذف المصروف</button>` : row.revenueId ? `<button class="small-action" data-action="delete-revenue" data-revenue="${escapeHtml(row.revenueId)}">حذف الإيراد</button>` : "—"}</td></tr>`).join("")}</tbody></table></div>` : '<div class="empty-state"><p>لا توجد حركات مالية في هذا الشهر.</p></div>'}</section>`;
 }
 
 function openRevenueForm() {
@@ -2120,6 +2293,7 @@ function deleteExpense(expenseId) {
   if (currentUser?.role !== "coach") { showToast("حذف المصروفات متاح للمشرف فقط."); return; }
   const index = data.expenses.findIndex(expense => expense.id === expenseId);
   if (index < 0) { showToast("لم يتم العثور على المصروف."); return; }
+  if (data.expenses[index].monthlyPayroll === true) { showToast("مصروف أجور المدربين يُعاد حسابه من سجلات الحضور ولا يُحذف يدويًا."); return; }
   if (!window.confirm("هل تريد حذف هذا المصروف من الحسابات؟")) return;
   const [expense] = data.expenses.splice(index, 1);
   if (saveData()) {
@@ -3329,7 +3503,7 @@ function coachPaymentsView() {
       : requiresResubmission
         ? `<button class="small-action" data-action="reject-payment" data-payment="${escapeHtml(payment.id)}">رفض لإعادة تقديمه بالمبلغ الصحيح</button>`
         : `<button class="small-action" data-action="confirm-payment" data-payment="${escapeHtml(payment.id)}" ${user && canRequestPayment(user) ? "" : "disabled"}>مراجعة المبلغ وتأكيده</button>`;
-    return `<tr><td>${escapeHtml(payment.playerName)}</td><td>${escapeHtml(payment.planName)}<small class="table-subtext">${escapeHtml(subscriptionDurationLabel(payment.subscriptionDuration))}</small>${payment.originalPlanName && payment.originalPlanName !== payment.planName ? `<small class="table-subtext">الباقة المطلوبة: ${escapeHtml(payment.originalPlanName)}</small>` : ""}<br><strong>${arabicDigits(payment.amount)} ج.م</strong>${payment.walletCreditReserved ? `<small class="table-subtext">رصيد محفظة مستخدم/محجوز: ${arabicDigits(payment.walletCreditReserved)} ج.م</small>` : ""}${payment.walletCreditAddedAmount ? `<small class="table-subtext">رصيد دائن مضاف: ${arabicDigits(payment.walletCreditAddedAmount)} ج.م</small>` : ""}${payment.walletCreditUsedAmount ? `<small class="table-subtext">رصيد مخصوم: ${arabicDigits(payment.walletCreditUsedAmount)} ج.م</small>` : ""}${payment.siblingDiscount ? `<small class="table-subtext">خصم إخوة ${arabicDigits(payment.siblingDiscount)} ج.م</small>` : ""}${payment.specialDiscountAmount ? `<small class="table-subtext">خصم استثنائي ${arabicDigits(payment.specialDiscountAmount)} ج.م</small>` : ""}${payment.debtAddedAmount ? `<small class="table-subtext">مديونية مضافة ${arabicDigits(payment.debtAddedAmount)} ج.م</small>` : ""}</td><td>${escapeHtml(payment.method === "cash" ? "نقدي" : payment.methodLabel || "تحويل")}</td><td><strong class="payment-reference">${escapeHtml(payment.reference || "—")}</strong>${payment.reference && payment.method !== "cash" ? `<button class="copy-code" data-action="copy-text" data-copy="${escapeHtml(payment.reference)}">نسخ كود الدفع</button>` : ""}</td><td>${payment.receiptImage ? `<button type="button" class="receipt-preview" data-action="receipt-preview" data-receipt="${escapeHtml(payment.receiptImage)}" data-player="${escapeHtml(payment.playerName)}"><img class="receipt-thumbnail" src="${escapeHtml(payment.receiptImage)}" alt="إيصال تحويل ${escapeHtml(payment.playerName)}"><span>اضغط لتكبير الإيصال</span></button>` : "—"}</td><td>${escapeHtml(payment.date)}<br>${escapeHtml(paymentTime)}</td><td>${action}</td></tr>`;
+    return `<tr><td>${escapeHtml(payment.playerName)}</td><td>${escapeHtml(payment.planName)}<small class="table-subtext">${escapeHtml(subscriptionDurationLabel(payment.subscriptionDuration))}</small>${payment.originalPlanName && payment.originalPlanName !== payment.planName ? `<small class="table-subtext">الباقة المطلوبة: ${escapeHtml(payment.originalPlanName)}</small>` : ""}<br><strong>${arabicDigits(payment.amount)} ج.م</strong>${payment.walletCreditReserved ? `<small class="table-subtext">رصيد محفظة مستخدم/محجوز: ${arabicDigits(payment.walletCreditReserved)} ج.م</small>` : ""}${payment.walletCreditAddedAmount ? `<small class="table-subtext">رصيد دائن مضاف: ${arabicDigits(payment.walletCreditAddedAmount)} ج.م</small>` : ""}${payment.walletCreditUsedAmount ? `<small class="table-subtext">رصيد مخصوم: ${arabicDigits(payment.walletCreditUsedAmount)} ج.م</small>` : ""}${payment.siblingDiscount ? `<small class="table-subtext">خصم إخوة ${arabicDigits(payment.siblingDiscount)} ج.م</small>` : ""}${payment.specialDiscountAmount ? `<small class="table-subtext">خصم استثنائي ${arabicDigits(payment.specialDiscountAmount)} ج.م</small>` : ""}${payment.debtAddedAmount ? `<small class="table-subtext">مديونية مضافة ${arabicDigits(payment.debtAddedAmount)} ج.م</small>` : ""}</td><td>${escapeHtml(payment.methodLabel || (payment.method === "cash" ? "نقدي" : "تحويل"))}</td><td><strong class="payment-reference">${escapeHtml(payment.reference || "—")}</strong>${payment.reference && payment.method === "instapay" ? `<button class="copy-code" data-action="copy-text" data-copy="${escapeHtml(payment.reference)}">نسخ كود الدفع</button>` : ""}</td><td>${payment.receiptImage ? `<button type="button" class="receipt-preview" data-action="receipt-preview" data-receipt="${escapeHtml(payment.receiptImage)}"><img class="receipt-thumbnail" src="${escapeHtml(payment.receiptImage)}" alt="إيصال تحويل ${escapeHtml(payment.playerName)}"><span>اضغط لتكبير الإيصال</span></button>` : "—"}</td><td>${escapeHtml(payment.date)}<br>${escapeHtml(paymentTime)}</td><td>${action}</td></tr>`;
   };
   const unpaidRow = ({ user, payment }) => payment
     ? paymentRow(payment)
@@ -3593,7 +3767,7 @@ function requestPayment(planId) {
     const paymentGroupId = crypto.randomUUID();
     const submissions = allocations.map(allocation => {
       const payment = {
-        id: crypto.randomUUID(), guardianId: currentUser.id, playerId: allocation.player.id,
+        id: crypto.randomUUID(), guardianId: currentUser.id, playerId: allocation.player.id, playerCode: allocation.player.playerCode,
         playerName: allocation.player.name, planId: allocation.dayCount, planName: allocation.plan.name,
         subscriptionDuration, paymentGroupId,
         amount: allocation.amount,
@@ -4770,7 +4944,7 @@ document.addEventListener("click", async event => {
     renderView();
     return;
   }
-  if (["new-session", "edit-session", "delete-session", "take-attendance", "day-off", "code-attendance", "cash-payment", "cash-debt-payment", "new-trainer", "mark-trainer-attendance", "new-expense", "new-revenue", "instapay-settings", "confirm-payment", "reject-payment", "receipt-preview", "approve-makeup", "reject-makeup", "approve-player-category", "edit-player-category", "delete-expense", "delete-revenue", "delete-guardian", "record-administrative-absence"].includes(action.dataset.action) && currentUser.role !== "coach") {
+  if (["new-session", "edit-session", "delete-session", "take-attendance", "day-off", "code-attendance", "cash-payment", "cash-debt-payment", "new-trainer", "edit-trainer", "trainer-report", "close-trainer-report", "mark-trainer-attendance", "new-expense", "new-revenue", "instapay-settings", "confirm-payment", "reject-payment", "receipt-preview", "approve-makeup", "reject-makeup", "approve-player-category", "edit-player-category", "delete-expense", "delete-revenue", "delete-guardian", "record-administrative-absence"].includes(action.dataset.action) && currentUser.role !== "coach") {
     showToast("هذا الإجراء متاح لمشرف الأكاديمية فقط.");
     return;
   }
@@ -4817,7 +4991,19 @@ document.addEventListener("click", async event => {
   }
   if (action.dataset.action === "delete-guardian") deleteGuardian(action.dataset.guardian);
   if (action.dataset.action === "new-trainer") openTrainerForm();
+  if (action.dataset.action === "edit-trainer") openTrainerForm(action.dataset.trainer);
   if (action.dataset.action === "mark-trainer-attendance") openTrainerAttendanceForm();
+  if (action.dataset.action === "trainer-report") {
+    selectedTrainerReportId = action.dataset.trainer;
+    trainerReportMonth ||= localDateString().slice(0, 7);
+    activeView = "trainerAttendance";
+    renderView();
+    byId("trainer-report-month")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+  if (action.dataset.action === "close-trainer-report") {
+    selectedTrainerReportId = "";
+    renderView();
+  }
   if (action.dataset.action === "new-expense") openExpenseForm();
   if (action.dataset.action === "new-revenue") openRevenueForm();
   if (action.dataset.action === "instapay-settings") {
@@ -4851,6 +5037,22 @@ document.addEventListener("click", async event => {
 document.addEventListener("change", event => {
   if (event.target.name?.startsWith("legacySubscriptionStart") && currentUser?.role === "coach") {
     updateLegacyProjectedEndDate(event.target.form);
+  }
+  if (event.target.matches('select[name^="trainer-status-"]')) {
+    const sessionId = event.target.name.slice("trainer-status-".length);
+    const timeInput = [...event.target.form.querySelectorAll('input[name^="trainer-time-"]')]
+      .find(input => input.name === `trainer-time-${sessionId}`);
+    if (timeInput) timeInput.disabled = event.target.value === "غائب";
+  }
+  if (event.target.id === "trainer-attendance-date" && currentUser?.role === "coach") {
+    trainerAttendanceDate = event.target.value;
+    renderView();
+    return;
+  }
+  if (event.target.id === "trainer-report-month" && currentUser?.role === "coach") {
+    trainerReportMonth = event.target.value;
+    renderView();
+    return;
   }
   if (event.target.id === "training-count" && currentUser?.role === "coach") {
     const form = byId("action-form");

@@ -24,14 +24,6 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/users/$(request.auth.uid)/deviceSessions/$(request.auth.token.guardianSessionId)).data.active == true;
     }
 
-    function isGuardianWithProfileInRequest() {
-      return isGuardian()
-        || (signedIn()
-          && !exists(/databases/$(database)/documents/users/$(request.auth.uid))
-          && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid))
-          && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'guardian');
-    }
-
     function isTrainer() {
       return signedIn()
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
@@ -60,6 +52,16 @@ service cloud.firestore {
         && exists(/databases/$(database)/documents/trainerInvites/$(request.auth.token.email));
     }
 
+    function guardianOwnsPlayer(playerId, playerCode, playerName) {
+      return isGuardian()
+        && playerCode is string
+        && playerCode.matches('^\\d{6}$')
+        && exists(/databases/$(database)/documents/players/$(playerCode))
+        && get(/databases/$(database)/documents/players/$(playerCode)).data.id == playerId
+        && get(/databases/$(database)/documents/players/$(playerCode)).data.guardianId == request.auth.uid
+        && get(/databases/$(database)/documents/players/$(playerCode)).data.name == playerName;
+    }
+
     function trainerOwnsSession(sessionId) {
       return exists(/databases/$(database)/documents/sessions/$(sessionId))
         && get(/databases/$(database)/documents/sessions/$(sessionId)).data.coachId == request.auth.uid;
@@ -78,9 +80,7 @@ service cloud.firestore {
       allow create: if (isCoach() && request.resource.data.role == 'trainer')
         || (signedIn()
           && request.auth.uid == uid
-          && ((request.resource.data.role == 'guardian'
-            && request.resource.data.email == request.auth.token.email)
-            || invitedTrainer(uid)));
+          && invitedTrainer(uid));
       allow update: if isCoach()
         || (isGuardian() && request.auth.uid == uid
           && request.resource.data.role == resource.data.role
@@ -108,21 +108,18 @@ service cloud.firestore {
           && resource.data.active == true;
         allow list, create, update, delete: if false;
       }
+
     }
 
     match /players/{playerCode} {
       allow get: if isCoach()
         || trainerAssignedToPlayer(playerCode)
-        || (isGuardian() && (!exists(/databases/$(database)/documents/players/$(playerCode))
-          || resource.data.guardianId == request.auth.uid))
+        || (isGuardian() && resource.data.guardianId == request.auth.uid)
         || (isMember() && get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode == playerCode);
       allow list: if isCoach()
         || trainerAssignedToPlayer(playerCode)
         || (isGuardian() && resource.data.guardianId == request.auth.uid);
-      allow create: if isGuardianWithProfileInRequest()
-        && request.resource.data.guardianId == request.auth.uid
-        && request.resource.data.keys().hasAll(['gender'])
-        && request.resource.data.gender in ['male', 'female'];
+      allow create: if false;
       allow update: if isCoach()
         || (isGuardian() && resource.data.guardianId == request.auth.uid
           && request.resource.data.guardianId == request.auth.uid
@@ -162,11 +159,12 @@ service cloud.firestore {
 
     match /playerCodes/{code} {
       allow get: if signedIn()
-        && (isGuardian() || isCoach());
+        && (isCoach()
+          || (isGuardian()
+            && exists(/databases/$(database)/documents/players/$(code))
+            && get(/databases/$(database)/documents/players/$(code)).data.guardianId == request.auth.uid));
       allow list: if isCoach();
-      allow create: if isGuardianWithProfileInRequest()
-        && existsAfter(/databases/$(database)/documents/players/$(code))
-        && getAfter(/databases/$(database)/documents/players/$(code)).data.guardianId == request.auth.uid;
+      allow create: if false;
       allow update: if false;
       allow delete: if isCoach();
     }
@@ -181,13 +179,69 @@ service cloud.firestore {
         || (isGuardian() && resource.data.guardianId == request.auth.uid)
         || (isMember() && resource.data.playerId == memberPlayerId());
       allow create: if (isGuardian()
+          && request.resource.data.keys().hasAll([
+            'id', 'guardianId', 'playerId', 'playerName', 'planId', 'planName',
+            'subscriptionDuration', 'paymentGroupId', 'amount', 'walletCreditReserved',
+            'playerCode', 'expectedStartDate', 'reference', 'method', 'methodLabel', 'status',
+            'createdAt', 'date', 'updatedAt'
+          ])
+          && request.resource.data.keys().hasOnly([
+            'id', 'guardianId', 'playerId', 'playerName', 'planId', 'planName',
+            'subscriptionDuration', 'paymentGroupId', 'amount', 'siblingDiscount',
+            'walletCreditReserved', 'playerCode', 'expectedStartDate', 'reference', 'method',
+            'methodLabel', 'status', 'createdAt', 'date', 'updatedAt'
+          ])
+          && request.resource.data.id == paymentId
           && request.resource.data.guardianId == request.auth.uid
           && request.resource.data.status == 'بانتظار المراجعة'
           && request.resource.data.playerId is string
+          && request.resource.data.playerId.size() >= 1
+          && request.resource.data.playerId.size() <= 128
+          && guardianOwnsPlayer(request.resource.data.playerId, request.resource.data.playerCode, request.resource.data.playerName)
+          && request.resource.data.playerName is string
+          && request.resource.data.playerName.size() >= 2
+          && request.resource.data.playerName.size() <= 80
+          && request.resource.data.planId is int
+          && request.resource.data.planId >= 1
+          && request.resource.data.planId <= 7
+          && request.resource.data.planName is string
+          && request.resource.data.planName.size() >= 1
+          && request.resource.data.planName.size() <= 80
+          && request.resource.data.subscriptionDuration in ['full', 'half']
+          && request.resource.data.paymentGroupId is string
+          && request.resource.data.paymentGroupId.size() >= 16
+          && request.resource.data.paymentGroupId.size() <= 80
+          && request.resource.data.amount is number
+          && request.resource.data.amount >= 0
+          && request.resource.data.amount <= 1000000
+          && request.resource.data.walletCreditReserved is number
+          && request.resource.data.walletCreditReserved >= 0
+          && request.resource.data.walletCreditReserved <= 1000000
+          && (!request.resource.data.keys().hasAny(['siblingDiscount'])
+            || (request.resource.data.siblingDiscount is number
+              && request.resource.data.siblingDiscount >= 0
+              && request.resource.data.siblingDiscount <= 1000000))
+          && request.resource.data.expectedStartDate is string
+          && request.resource.data.expectedStartDate.matches('^\\d{4}-\\d{2}-\\d{2}$')
+          && request.resource.data.reference is string
+          && ((request.resource.data.reference == 'رصيد محفظة اللاعب')
+            || (request.resource.data.reference.size() >= 4
+              && request.resource.data.reference.size() <= 120))
+          && (request.resource.data.amount == 0
+            || request.resource.data.reference != 'رصيد محفظة اللاعب')
+          && request.resource.data.method == 'instapay'
+          && request.resource.data.methodLabel == 'إنستا باي / محفظة بنكية'
+          && request.resource.data.createdAt is number
+          && request.resource.data.createdAt > 0
+          && request.resource.data.createdAt <= 4102444800000
+          && request.resource.data.date is string
+          && request.resource.data.date.size() >= 1
+          && request.resource.data.date.size() <= 100
+          && request.resource.data.updatedAt is timestamp
           && !exists(/databases/$(database)/documents/playerPaymentLocks/$(request.resource.data.playerId)))
         || (isCoach()
           && request.resource.data.playerId is string
-          && request.resource.data.method in ['cash', 'instapay']
+          && request.resource.data.method in ['cash', 'instapay', 'admin-adjustment']
           && request.resource.data.status in [
             'تم التأكيد',
             'تم الدفع نقدًا',
@@ -196,8 +250,14 @@ service cloud.firestore {
             'تم تطبيق خصم إخوة',
             'سداد مديونية نقدية'
           ]
-          && (request.resource.data.method == 'cash'
-            || request.resource.data.legacyImport == true));
+          && ((request.resource.data.method == 'cash'
+              || (request.resource.data.method == 'instapay'
+                && request.resource.data.legacyImport == true))
+            || (request.resource.data.method == 'admin-adjustment'
+              && request.resource.data.administrativeSubscriptionAdjustment == true
+              && request.resource.data.status == 'تم الدفع نقدًا'
+              && request.resource.data.amount is number
+              && request.resource.data.amount > 0)));
       allow update, delete: if isCoach();
     }
 
