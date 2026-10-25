@@ -4969,8 +4969,8 @@ byId("register-form").addEventListener("submit", event => {
     showToast("اختر الموافقة على إشعارات الأكاديمية أو رفضها قبل إنشاء الحساب.");
     return;
   }
-  const guardianPhone = String(form.get("guardianPhone")).replace(/\s/g, "");
-  const whatsappPhone = String(form.get("whatsappPhone")).replace(/\s/g, "");
+  const guardianPhone = normalizeDigits(String(form.get("guardianPhone"))).replace(/\s/g, "");
+  const whatsappPhone = normalizeDigits(String(form.get("whatsappPhone"))).replace(/\s/g, "");
   if (!/^01\d{9}$/.test(guardianPhone)) { showToast("أدخل رقم هاتف مصري صحيحًا مكوّنًا من ١١ رقمًا."); return; }
   if (!/^01\d{9}$/.test(whatsappPhone)) { showToast("أدخل رقم واتساب مصريًا مكوّنًا من ١١ رقمًا."); return; }
   const childNames = form.getAll("childName").map(value => String(value).trim());
