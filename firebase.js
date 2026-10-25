@@ -52,7 +52,6 @@ const firebaseConfig = {
 const COACH_EMAIL = "al.itthad.academy@gmail.com";
 const FIREBASE_WEB_PUSH_VAPID_KEY = "BG_n4zEwQIE8kkSM-H-bUp5smvv9SIdo9tzZ8NFbxAoYJRHBRBjFLqMfN4GJ_M1Bly9x2X1alwPM96mynMc6620";
 const FIREBASE_APPCHECK_SITE_KEY = "6LdKV_stAAAAAISGKewc6xy9x-bY1CILrl9yECS-";
-const DEVICE_SESSION_STORAGE_KEY = "alEtihadAcademy.deviceSession.v1";
 
 const useFirebaseEmulators = ["localhost", "127.0.0.1"].includes(window.location.hostname)
   && new URLSearchParams(window.location.search).get("emulator") === "1";
@@ -82,30 +81,11 @@ function requireAppCheckConfiguration() {
   }
 }
 
-function currentDeviceSessionId() {
-  let deviceId = localStorage.getItem(DEVICE_SESSION_STORAGE_KEY);
-  if (!deviceId) {
-    deviceId = crypto.randomUUID();
-    localStorage.setItem(DEVICE_SESSION_STORAGE_KEY, deviceId);
-  }
-  return deviceId;
-}
-
-async function openGuardianDeviceSession() {
-  requireAppCheckConfiguration();
-  const result = await httpsCallable(functions, "openGuardianDeviceSession")({
-    deviceId: currentDeviceSessionId()
-  });
-  await signInWithCustomToken(auth, result.data.token);
-}
-
 async function closeActiveDeviceSession() {
   const user = auth.currentUser;
   if (!user) return;
   const { claims } = await user.getIdTokenResult();
-  if (typeof claims.guardianSessionId === "string") {
-    await httpsCallable(functions, "closeGuardianDeviceSession")({});
-  } else if (claims.playerSession === true) {
+  if (claims.playerSession === true) {
     await httpsCallable(functions, "closePlayerSession")({});
   }
 }
@@ -494,9 +474,7 @@ function academyServices() {
           try {
             const { claims } = await user.getIdTokenResult();
             let sessionRef = null;
-            if (typeof claims.guardianSessionId === "string") {
-              sessionRef = doc(db, "users", user.uid, "deviceSessions", claims.guardianSessionId);
-            } else if (claims.playerSession === true) {
+            if (claims.playerSession === true) {
               sessionRef = doc(db, "playerSessions", user.uid);
             }
             if (sessionRef) {
@@ -521,26 +499,88 @@ function academyServices() {
       const credential = await createUserWithEmailAndPassword(auth, guardian.email.trim(), guardian.password);
       try {
         await updateProfile(credential.user, { displayName: guardian.name });
-        const registerAccount = httpsCallable(functions, "registerGuardianAccount");
-        const registration = await registerAccount({
-          guardian: {
-            name: guardian.name,
-            guardianPhone: guardian.guardianPhone,
-            whatsappPhone: guardian.whatsappPhone
-          },
-          players: players.map(player => ({
-            name: player.name,
-            birthDate: player.birthDate,
-            gender: player.gender
-          }))
-        });
-        const guardianProfile = registration.data.profile;
-        const registeredPlayers = registration.data.players;
+        const guardianProfile = {
+          id: credential.user.uid,
+          role: "guardian",
+          name: guardian.name.trim(),
+          guardianPhone: guardian.guardianPhone,
+          whatsappPhone: guardian.whatsappPhone,
+          email: credential.user.email,
+          joinedAt: guardian.joinedAt || new Date().toISOString()
+        };
+        const sessionSnapshot = await getDocs(collection(db, "sessions"));
+        const registeredPlayers = players.map(player => ({
+          id: player.id || crypto.randomUUID(),
+          role: "member",
+          guardianId: credential.user.uid,
+          name: player.name.trim(),
+          birthDate: player.birthDate,
+          gender: player.gender,
+          category: player.category,
+          weeklyDays: [],
+          weeklyDaysCount: 0,
+          plan: 0,
+          walletBalance: 0,
+          sessionsLeft: 0,
+          sessionsUsed: 0,
+          expectedStartDate: null,
+          actualStartDate: null,
+          subscriptionStart: null,
+          subscriptionEnd: null,
+          endDate: null,
+          attendanceLogs: [],
+          assignedTrainerIds: [...new Set(sessionSnapshot.docs
+            .map(snapshot => snapshot.data())
+            .filter(session => sessionAllowsPlayer(session, player))
+            .map(session => session.coachId)
+            .filter(id => typeof id === "string" && id))].slice(0, 3),
+          joinedAt: player.joinedAt || new Date().toISOString()
+        }));
+        const profileRef = doc(db, "users", credential.user.uid);
+        if ((await getDoc(profileRef)).exists()) {
+          throw new Error("حساب ولي الأمر مسجل بالفعل. سجّل الدخول بدلًا من إنشاء حساب جديد.");
+        }
+        let saved = false;
+        for (let attempt = 0; attempt < 10 && !saved; attempt += 1) {
+          const codes = new Set();
+          while (codes.size < registeredPlayers.length) {
+            const value = crypto.getRandomValues(new Uint32Array(1))[0] % 1000000;
+            codes.add(String(value).padStart(6, "0"));
+          }
+          const playerCodes = [...codes];
+          const playersWithCodes = registeredPlayers.map((player, index) => ({
+            ...player,
+            playerCode: playerCodes[index]
+          }));
+          const batch = writeBatch(db);
+          batch.set(profileRef, { ...guardianProfile, createdAt: serverTimestamp() });
+          playersWithCodes.forEach(player => {
+            batch.set(doc(db, "players", player.playerCode), {
+              ...player,
+              createdAt: serverTimestamp()
+            });
+            batch.set(doc(db, "playerCodes", player.playerCode), {
+              playerId: player.id,
+              playerCode: player.playerCode
+            });
+          });
+          try {
+            await batch.commit();
+            registeredPlayers.splice(0, registeredPlayers.length, ...playersWithCodes);
+            saved = true;
+          } catch (error) {
+            if (error?.code !== "permission-denied" || attempt === 9) {
+              if (error?.code === "permission-denied") {
+                throw new Error("تعذر حفظ الحساب أو حجز كود لاعب فريد. تحقق من نشر قواعد Firestore المحدّثة ثم حاول مرة أخرى.");
+              }
+              throw error;
+            }
+          }
+        }
         baseline.set(`users/${guardianProfile.id}`, baselineValue("users", guardianProfile));
         registeredPlayers.forEach(player => {
           baseline.set(`players/${player.playerCode}`, baselineValue("players", player));
         });
-        await openGuardianDeviceSession();
         return { profile: guardianProfile, players: registeredPlayers };
       } catch (error) {
         const profileSnapshot = await getDoc(doc(db, "users", credential.user.uid)).catch(() => null);
@@ -562,15 +602,6 @@ function academyServices() {
       if (!profile) {
         await signOut(auth);
         throw new Error("هذا البريد لم تتم إضافته إلى الأكاديمية. تواصل مع المشرف.");
-      }
-      if (profile.role === "guardian") {
-        try {
-          requireAppCheckConfiguration();
-          await openGuardianDeviceSession();
-        } catch (error) {
-          await signOut(auth);
-          throw error;
-        }
       }
       return profile;
     },
@@ -634,19 +665,61 @@ function academyServices() {
       }
     },
     async createPlayer(player) {
+      requireAppCheckConfiguration();
       if (activeProfile?.role !== "guardian" || activeProfile.id !== auth.currentUser?.uid) {
         throw new Error("إضافة لاعب متاحة لحساب ولي الأمر المسجل فقط.");
       }
-      const createGuardianPlayer = httpsCallable(functions, "createGuardianPlayer");
-      const result = await createGuardianPlayer({
-        name: player.name,
+      const sessionSnapshot = await getDocs(collection(db, "sessions"));
+      const weeklyDays = [...new Set(player.weeklyDays || [])];
+      const savedPlayer = {
+        id: player.id || crypto.randomUUID(),
+        role: "member",
+        guardianId: activeProfile.id,
+        name: player.name.trim(),
         birthDate: player.birthDate,
         gender: player.gender,
-        weeklyDays: player.weeklyDays
-      });
-      const savedPlayer = result.data.player;
-      baseline.set(`players/${savedPlayer.playerCode}`, baselineValue("players", savedPlayer));
-      return { ...player, ...savedPlayer };
+        category: player.category,
+        weeklyDays,
+        weeklyDaysCount: weeklyDays.length,
+        plan: weeklyDays.length,
+        walletBalance: 0,
+        sessionsLeft: 0,
+        sessionsUsed: 0,
+        expectedStartDate: null,
+        actualStartDate: null,
+        subscriptionStart: null,
+        subscriptionEnd: null,
+        endDate: null,
+        attendanceLogs: [],
+        assignedTrainerIds: [...new Set(sessionSnapshot.docs
+          .map(snapshot => snapshot.data())
+          .filter(session => sessionAllowsPlayer(session, player))
+          .map(session => session.coachId)
+          .filter(id => typeof id === "string" && id))].slice(0, 3)
+      };
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const value = crypto.getRandomValues(new Uint32Array(1))[0] % 1000000;
+        const playerCode = String(value).padStart(6, "0");
+        const batch = writeBatch(db);
+        batch.set(doc(db, "players", playerCode), {
+          ...playerForFirestore(savedPlayer),
+          playerCode,
+          createdAt: serverTimestamp()
+        });
+        batch.set(doc(db, "playerCodes", playerCode), {
+          playerId: savedPlayer.id,
+          playerCode
+        });
+        try {
+          await batch.commit();
+          const createdPlayer = { ...savedPlayer, playerCode };
+          baseline.set(`players/${playerCode}`, baselineValue("players", createdPlayer));
+          return createdPlayer;
+        } catch (error) {
+          if (error?.code !== "permission-denied" || attempt === 9) throw error;
+        }
+      }
+      throw new Error("تعذر إنشاء كود فريد للاعب. حاول مرة أخرى.");
     },
     async updatePlayer(player) {
       const playerRef = doc(db, "players", player.playerCode);
@@ -712,18 +785,7 @@ function academyServices() {
         if (!player.exists() || player.data().activePlayerSessionUid !== user.uid) return null;
         return { ...player.data(), id: player.data().id || player.id, role: "member", authUid: user.uid };
       }
-      if (typeof claims.guardianSessionId === "string") {
-        let session;
-        try {
-          session = await getDoc(doc(db, "users", user.uid, "deviceSessions", claims.guardianSessionId));
-        } catch (error) {
-          if (error?.code === "permission-denied") return null;
-          throw error;
-        }
-        if (!session.exists() || session.data().active !== true) return null;
-      }
       const profile = await getProfile(user);
-      if (profile?.role === "guardian" && typeof claims.guardianSessionId !== "string") return null;
       return profile;
     },
     async signOut() {

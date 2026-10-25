@@ -4975,6 +4975,10 @@ byId("register-form").addEventListener("submit", event => {
   if (!/^01\d{9}$/.test(whatsappPhone)) { showToast("أدخل رقم واتساب مصريًا مكوّنًا من ١١ رقمًا."); return; }
   const childNames = form.getAll("childName").map(value => String(value).trim());
   const childGenders = form.getAll("childGender").map(String);
+  if (childNames.length > 200) {
+    showToast("يمكن تسجيل ٢٠٠ لاعب كحد أقصى في الحساب الواحد.");
+    return;
+  }
   const childBirthDays = form.getAll("childBirthDay").map(value => Number(normalizeDigits(String(value).trim())));
   const childBirthMonths = form.getAll("childBirthMonth").map(value => Number(normalizeDigits(String(value).trim())));
   const childBirthYears = form.getAll("childBirthYear").map(value => Number(normalizeDigits(String(value).trim())));
@@ -5494,11 +5498,9 @@ function observeFirebaseAuth() {
           showAuth();
           showToast(claims.playerSession === true
             ? "انتهت جلسة اللاعب أو تم استبدال الجهاز. سجّل الدخول مجددًا بكود اللاعب."
-            : typeof claims.guardianSessionId === "string"
-              ? "انتهت جلسة ولي الأمر على هذا الجهاز. سجّل الدخول مجددًا."
-              : user.isAnonymous
-                ? "تعذر استعادة جلسة اللاعب. سجّل الدخول مجددًا باستخدام كود الحضور."
-                : "هذا البريد غير مسجل بدور في الأكاديمية. تواصل مع المشرف.");
+            : user.isAnonymous
+              ? "تعذر استعادة جلسة اللاعب. سجّل الدخول مجددًا باستخدام كود الحضور."
+              : "هذا البريد غير مسجل بدور في الأكاديمية. تواصل مع المشرف.");
           return;
         }
         await activateCloudProfile(profile);

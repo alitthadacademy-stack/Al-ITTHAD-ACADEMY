@@ -18,10 +18,84 @@ service cloud.firestore {
     function isGuardian() {
       return signedIn()
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-        && userProfile(request.auth.uid).role == 'guardian'
-        && request.auth.token.guardianSessionId is string
-        && exists(/databases/$(database)/documents/users/$(request.auth.uid)/deviceSessions/$(request.auth.token.guardianSessionId))
-        && get(/databases/$(database)/documents/users/$(request.auth.uid)/deviceSessions/$(request.auth.token.guardianSessionId)).data.active == true;
+        && userProfile(request.auth.uid).role == 'guardian';
+    }
+
+    function guardianProfileAfterRegistration() {
+      let profilePath = /databases/$(database)/documents/users/$(request.auth.uid);
+      return signedIn()
+        && existsAfter(profilePath)
+        && getAfter(profilePath).data.role == 'guardian'
+        && getAfter(profilePath).data.id == request.auth.uid
+        && getAfter(profilePath).data.email == request.auth.token.email;
+    }
+
+    function validAssignedTrainerIds(ids) {
+      return ids is list
+        && ids.size() <= 3
+        && (ids.size() < 1 || (ids[0] is string
+          && exists(/databases/$(database)/documents/users/$(ids[0]))
+          && get(/databases/$(database)/documents/users/$(ids[0])).data.role == 'trainer'))
+        && (ids.size() < 2 || (ids[1] is string
+          && exists(/databases/$(database)/documents/users/$(ids[1]))
+          && get(/databases/$(database)/documents/users/$(ids[1])).data.role == 'trainer'))
+        && (ids.size() < 3 || (ids[2] is string
+          && exists(/databases/$(database)/documents/users/$(ids[2]))
+          && get(/databases/$(database)/documents/users/$(ids[2])).data.role == 'trainer'));
+    }
+
+    function validGuardianPlayerCreate(playerCode) {
+      return request.resource.data.keys().hasAll([
+          'id', 'role', 'guardianId', 'name', 'birthDate', 'gender', 'category',
+          'weeklyDays', 'weeklyDaysCount', 'plan', 'walletBalance', 'sessionsLeft',
+          'sessionsUsed', 'expectedStartDate', 'actualStartDate', 'subscriptionStart',
+          'subscriptionEnd', 'endDate', 'attendanceLogs', 'assignedTrainerIds',
+          'joinedAt', 'playerCode', 'createdAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'id', 'role', 'guardianId', 'name', 'birthDate', 'gender', 'category',
+          'weeklyDays', 'weeklyDaysCount', 'plan', 'walletBalance', 'sessionsLeft',
+          'sessionsUsed', 'expectedStartDate', 'actualStartDate', 'subscriptionStart',
+          'subscriptionEnd', 'endDate', 'attendanceLogs', 'assignedTrainerIds',
+          'joinedAt', 'playerCode', 'createdAt'
+        ])
+        && request.resource.data.id is string
+        && request.resource.data.id.size() >= 1
+        && request.resource.data.id.size() <= 128
+        && request.resource.data.role == 'member'
+        && request.resource.data.guardianId == request.auth.uid
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2
+        && request.resource.data.name.size() <= 80
+        && request.resource.data.birthDate is string
+        && request.resource.data.birthDate.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && request.resource.data.gender in ['male', 'female']
+        && request.resource.data.category in [
+          'أطفال حتى ٧ سنوات', 'براعم تحت ١٠', 'ناشئين تحت ١٤',
+          'شباب تحت ١٨', 'شباب ١٨+', 'جميع الفئات العمرية'
+        ]
+        && request.resource.data.weeklyDays is list
+        && request.resource.data.weeklyDays.size() <= 7
+        && request.resource.data.weeklyDays.hasOnly([
+          'السبت', 'الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة'
+        ])
+        && request.resource.data.weeklyDaysCount == request.resource.data.weeklyDays.size()
+        && request.resource.data.plan == request.resource.data.weeklyDaysCount
+        && request.resource.data.walletBalance == 0
+        && request.resource.data.sessionsLeft == 0
+        && request.resource.data.sessionsUsed == 0
+        && request.resource.data.expectedStartDate == null
+        && request.resource.data.actualStartDate == null
+        && request.resource.data.subscriptionStart == null
+        && request.resource.data.subscriptionEnd == null
+        && request.resource.data.endDate == null
+        && request.resource.data.attendanceLogs is list
+        && request.resource.data.attendanceLogs.size() == 0
+        && validAssignedTrainerIds(request.resource.data.assignedTrainerIds)
+        && request.resource.data.joinedAt is string
+        && request.resource.data.playerCode == playerCode
+        && playerCode.matches('^\\d{6}$')
+        && request.resource.data.createdAt == request.time;
     }
 
     function isTrainer() {
@@ -80,6 +154,26 @@ service cloud.firestore {
       allow create: if (isCoach() && request.resource.data.role == 'trainer')
         || (signedIn()
           && request.auth.uid == uid
+          && request.resource.data.keys().hasAll([
+            'id', 'role', 'name', 'guardianPhone', 'whatsappPhone', 'email', 'joinedAt', 'createdAt'
+          ])
+          && request.resource.data.keys().hasOnly([
+            'id', 'role', 'name', 'guardianPhone', 'whatsappPhone', 'email', 'joinedAt', 'createdAt'
+          ])
+          && request.resource.data.id == uid
+          && request.resource.data.role == 'guardian'
+          && request.resource.data.name is string
+          && request.resource.data.name.size() >= 2
+          && request.resource.data.name.size() <= 80
+          && request.resource.data.guardianPhone is string
+          && request.resource.data.guardianPhone.matches('^01\\d{9}$')
+          && request.resource.data.whatsappPhone is string
+          && request.resource.data.whatsappPhone.matches('^01\\d{9}$')
+          && request.resource.data.email == request.auth.token.email
+          && request.resource.data.joinedAt is string
+          && request.resource.data.createdAt == request.time)
+        || (signedIn()
+          && request.auth.uid == uid
           && invitedTrainer(uid));
       allow update: if isCoach()
         || (isGuardian() && request.auth.uid == uid
@@ -119,7 +213,11 @@ service cloud.firestore {
       allow list: if isCoach()
         || trainerAssignedToPlayer(playerCode)
         || (isGuardian() && resource.data.guardianId == request.auth.uid);
-      allow create: if false;
+      allow create: if guardianProfileAfterRegistration()
+        && validGuardianPlayerCreate(playerCode)
+        && existsAfter(/databases/$(database)/documents/playerCodes/$(playerCode))
+        && getAfter(/databases/$(database)/documents/playerCodes/$(playerCode)).data.playerId == request.resource.data.id
+        && getAfter(/databases/$(database)/documents/playerCodes/$(playerCode)).data.playerCode == playerCode;
       allow update: if isCoach()
         || (isGuardian() && resource.data.guardianId == request.auth.uid
           && request.resource.data.guardianId == request.auth.uid
@@ -164,7 +262,16 @@ service cloud.firestore {
             && exists(/databases/$(database)/documents/players/$(code))
             && get(/databases/$(database)/documents/players/$(code)).data.guardianId == request.auth.uid));
       allow list: if isCoach();
-      allow create: if false;
+      allow create: if guardianProfileAfterRegistration()
+        && request.resource.data.keys().hasAll(['playerId', 'playerCode'])
+        && request.resource.data.keys().hasOnly(['playerId', 'playerCode'])
+        && request.resource.data.playerCode == code
+        && code.matches('^\\d{6}$')
+        && request.resource.data.playerId is string
+        && existsAfter(/databases/$(database)/documents/players/$(code))
+        && getAfter(/databases/$(database)/documents/players/$(code)).data.id == request.resource.data.playerId
+        && getAfter(/databases/$(database)/documents/players/$(code)).data.guardianId == request.auth.uid
+        && getAfter(/databases/$(database)/documents/players/$(code)).data.playerCode == code;
       allow update: if false;
       allow delete: if isCoach();
     }
