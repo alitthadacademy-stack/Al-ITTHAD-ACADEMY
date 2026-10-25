@@ -40,6 +40,9 @@ let connectionCheckInProgress = false;
 let connectionRetryTimer = null;
 let firebaseObserverStarted = false;
 let attendanceClockInterval = null;
+let attendanceQrStream = null;
+let attendanceQrBusy = false;
+let attendanceQrFrame = null;
 
 function notificationConsentStorageKey(userId) {
   return `${STORAGE_KEY}.push.${userId}`;
@@ -931,6 +934,29 @@ function genderLabel(gender) {
   return gender === "male" ? "ذكر" : gender === "female" ? "أنثى" : "غير محدد";
 }
 
+function renderPlayerQrCodes(container = document) {
+  container.querySelectorAll("[data-player-qr]").forEach(target => {
+    const code = target.dataset.playerQr || "";
+    if (!/^\d{6}$/.test(code)) {
+      target.textContent = "كود اللاعب غير متاح.";
+      return;
+    }
+    if (typeof window.qrcode !== "function") {
+      target.textContent = "تعذر تحميل أداة إنشاء رمز QR. تحقق من الاتصال بالإنترنت وأعد تحميل الصفحة.";
+      return;
+    }
+    try {
+      const qr = window.qrcode(0, "M");
+      qr.addData(code);
+      qr.make();
+      target.innerHTML = qr.createSvgTag(5, 2);
+    } catch (error) {
+      console.error("تعذر إنشاء رمز QR للاعب.", error);
+      target.textContent = "تعذر إنشاء رمز QR لهذا اللاعب.";
+    }
+  });
+}
+
 function sessionGenderLabel(session) {
   return session.gender === "male" ? "ولاد" : session.gender === "female" ? "بنات" : "الكل";
 }
@@ -1288,6 +1314,7 @@ function renderView() {
     if (currentUser.role === "guardian" && !childrenForGuardian().length) content.innerHTML = guardianChildBar();
     else content.innerHTML = activeView === "schedule" ? `${memberScheduleView()}${memberAttendanceView()}` : activeView === "attendance" ? memberAttendanceView() : activeView === "subscription" ? memberSubscriptionView() : activeView === "payments" ? memberPaymentsView() : memberHomeView();
   }
+  renderPlayerQrCodes(content);
   const notificationSlot = content.querySelector(".welcome-notification-slot");
   if (notificationButton && showAnnouncementsButton && notificationSlot) {
     notificationSlot.append(notificationButton);
@@ -1348,11 +1375,14 @@ function memberHomeView() {
   const playerCodeContact = ["guardian", "member"].includes(currentUser.role) && user.playerCode
     ? `<div class="guardian-player-code"><span>كود اللاعب: <strong>${escapeHtml(user.playerCode)}</strong></span><button type="button" class="copy-code" data-action="copy-text" data-copy="${escapeHtml(user.playerCode)}" aria-label="نسخ كود اللاعب">⧉ نسخ</button><a class="text-link whatsapp-link" href="https://wa.me/${whatsappPhone(DEFAULT_INSTAPAY_NUMBER)}?text=${encodeURIComponent(`اسم اللاعب / ${user.name}\nكود اللاعب / ${user.playerCode}`)}" target="_blank" rel="noopener noreferrer">إرسال الكود للمشرف عبر واتساب</a></div>`
     : "";
+  const playerQrCard = user.playerCode
+    ? `<section class="panel player-qr-card"><div><h2>كود QR للحضور</h2><p>اختر اللاعب من قائمة «اختيار اللاعب» لعرض كوده. هذا الرمز خاص باللاعب ${escapeHtml(user.name)}.</p></div><div class="player-qr-image" data-player-qr="${escapeHtml(user.playerCode)}" role="img" aria-label="رمز QR للاعب ${escapeHtml(user.name)}"></div><strong class="player-qr-code" dir="ltr">${escapeHtml(user.playerCode)}</strong></section>`
+    : "";
   const pendingCategory = pendingPlayerCategory(user);
   const categoryNotice = pendingCategory
     ? `<div class="inline-notice">بلغ اللاعب السن المؤهل للانتقال إلى فئة ${escapeHtml(pendingCategory)}. تظل فئته الحالية حتى اعتماد المشرف.</div>`
     : "";
-  return `<section class="portal-welcome"><div><p class="eyebrow"><span class="live-dot"></span>${egyptianDate.format(new Date())}</p><h1>أهلًا بك يا ${escapeHtml(parentName)} <span class="wave">✦</span></h1><p class="welcome-subtitle">متابعة اللاعب: <strong>${escapeHtml(user.name)}</strong></p>${playerCodeContact}</div><div class="welcome-actions"><div class="welcome-notification-slot"></div><span class="welcome-ball">🏀</span></div></section>${notificationPanel}${categoryNotice}
+  return `<section class="portal-welcome"><div><p class="eyebrow"><span class="live-dot"></span>${egyptianDate.format(new Date())}</p><h1>أهلًا بك يا ${escapeHtml(parentName)} <span class="wave">✦</span></h1><p class="welcome-subtitle">متابعة اللاعب: <strong>${escapeHtml(user.name)}</strong></p>${playerCodeContact}</div><div class="welcome-actions"><div class="welcome-notification-slot"></div><span class="welcome-ball">🏀</span></div></section>${playerQrCard}${notificationPanel}${categoryNotice}
     <section class="member-stats">
       <article class="member-stat"><span class="member-stat-icon green-icon">◷</span><p>الموعد القادم</p><strong>${nextSession ? `${escapeHtml(weekdayForDate(localDateString(nextSession.date)))} · ${escapeHtml(egyptianDate.format(nextSession.date))}` : "لا يوجد تدريب"}</strong><small>${escapeHtml(nextSession ? `${sessionTimeRange(nextSession.session)} · ${nextSession.session.title}` : "تظهر المواعيد بعد إضافتها من الأكاديمية")}</small></article>
       <article class="member-stat"><span class="member-stat-icon blue-icon">✓</span><p>التمارين المتبقية</p><strong>${arabicDigits(Math.max(0, sessionsLeft))} تمرين</strong><small>${user.legacyAttendanceAuto ? "حضور محسوب" : "حضر"} ${arabicDigits(attendanceCount)} من ${arabicDigits(balance.allowance)} تمارين</small></article>
@@ -2691,7 +2721,9 @@ function openCodeAttendanceForm() {
     return `<option value="${escapeHtml(slot.id)}" ${slot.id === selectedSlotId ? "selected" : ""}>${escapeHtml(sessionTimeRange(session))}</option>`;
   }).join("");
   const currentTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-  openModal("تسجيل حضور أو غياب بكود اللاعب", `<p class="attendance-current-time" aria-live="polite">الساعة الحالية: <strong id="attendance-current-time">${currentTime}</strong></p><label>ساعة التدريب<select name="slotId" required>${slots.length > 1 ? '<option value="">اختر الساعة</option>' : ""}${options}</select></label><label>كود اللاعب<input name="playerCode" inputmode="numeric" pattern="[0-9٠-٩۰-۹]{6}" minlength="6" maxlength="6" required placeholder="الكود الرقمي المكوّن من ٦ أرقام"></label><label>حالة اللاعب<select name="attendanceStatus" required><option value="حاضر" selected>حاضر</option><option value="غائب">غائب — لا يُخصم تمرين ويمكن طلب تعويض</option></select></label><p class="modal-explainer">تظهر ساعات التدريب المفتوح تسجيل الحضور أو الغياب فيها الآن فقط. عند تسجيل الغياب بالكود يُحفظ في سجل الحضور دون خصم تمرين، ويمكن لولي الأمر أو اللاعب طلب تعويضه في يوم تدريب آخر قبل انتهاء الاشتراك.</p>`, "تسجيل الحالة بالكود", form => saveCodeAttendance(form), "الحضور والغياب");
+  openModal("تسجيل حضور أو غياب بكود اللاعب", `<p class="attendance-current-time" aria-live="polite">الساعة الحالية: <strong id="attendance-current-time">${currentTime}</strong></p><label>ساعة التدريب<select name="slotId" required>${slots.length > 1 ? '<option value="">اختر الساعة</option>' : ""}${options}</select></label><label>كود اللاعب<input name="playerCode" inputmode="numeric" pattern="[0-9٠-٩۰-۹]{6}" minlength="6" maxlength="6" required placeholder="الكود الرقمي المكوّن من ٦ أرقام"></label><button type="button" class="secondary-button qr-scan-button" id="scan-player-qr">▦ مسح كود QR بالكاميرا</button><div class="qr-scanner" id="player-qr-scanner" hidden><video id="player-qr-video" playsinline muted></video><p id="player-qr-status" aria-live="polite">وجّه الكاميرا إلى رمز QR الخاص باللاعب.</p><button type="button" class="small-action" id="stop-player-qr">إيقاف الكاميرا</button></div><label>حالة اللاعب<select name="attendanceStatus" required><option value="حاضر" selected>حاضر</option><option value="غائب">غائب — لا يُخصم تمرين ويمكن طلب تعويض</option></select></label><p class="modal-explainer">تظهر ساعات التدريب المفتوح تسجيل الحضور أو الغياب فيها الآن فقط. عند تسجيل الغياب بالكود يُحفظ في سجل الحضور دون خصم تمرين، ويمكن لولي الأمر أو اللاعب طلب تعويضه في يوم تدريب آخر قبل انتهاء الاشتراك.</p>`, "تسجيل الحالة بالكود", form => saveCodeAttendance(form), "الحضور والغياب");
+  byId("scan-player-qr").addEventListener("click", startPlayerQrScanner);
+  byId("stop-player-qr").addEventListener("click", stopPlayerQrScanner);
   if (attendanceClockInterval !== null) clearInterval(attendanceClockInterval);
   attendanceClockInterval = setInterval(() => {
     const clock = byId("attendance-current-time");
@@ -2705,6 +2737,117 @@ function openCodeAttendanceForm() {
   }, 1000);
 }
 
+async function startPlayerQrScanner() {
+  const hasNativeScanner = typeof window.BarcodeDetector === "function";
+  const hasQrDecoder = typeof window.jsQR === "function";
+  if ((!hasNativeScanner && !hasQrDecoder) || !navigator.mediaDevices?.getUserMedia) {
+    showToast("تعذر تشغيل قارئ QR أو الكاميرا في هذا المتصفح. استخدم خانة كود اللاعب يدويًا.");
+    return;
+  }
+  stopPlayerQrScanner();
+  const scanner = byId("player-qr-scanner");
+  const video = byId("player-qr-video");
+  const status = byId("player-qr-status");
+  if (!scanner || !video || !status) return;
+  try {
+    let detector = null;
+    if (hasNativeScanner) {
+      try {
+        detector = new window.BarcodeDetector({ formats: ["qr_code"] });
+      } catch (error) {
+        console.warn("قارئ QR المدمج غير متاح؛ سيتم استخدام القارئ الاحتياطي.", error);
+      }
+    }
+    if (!detector && !hasQrDecoder) throw new Error("لا يوجد قارئ QR متوافق في هذا المتصفح.");
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) throw new Error("تعذر تهيئة قارئ QR.");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: "environment" } }
+    });
+    if (byId("action-modal").getAttribute("aria-hidden") === "true") {
+      stream.getTracks().forEach(track => track.stop());
+      return;
+    }
+    attendanceQrStream = stream;
+    video.srcObject = attendanceQrStream;
+    scanner.hidden = false;
+    await video.play();
+    let lastScanAt = 0;
+    const scan = async () => {
+      if (!attendanceQrStream || byId("action-modal").getAttribute("aria-hidden") === "true") return;
+      if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+        && !attendanceQrBusy && performance.now() - lastScanAt >= 150) {
+        lastScanAt = performance.now();
+        try {
+          let rawValue = "";
+          if (detector) {
+            rawValue = (await detector.detect(video))[0]?.rawValue || "";
+          } else {
+            const scale = Math.min(1, 640 / video.videoWidth);
+            canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+            canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            rawValue = window.jsQR(
+              context.getImageData(0, 0, canvas.width, canvas.height).data,
+              canvas.width,
+              canvas.height,
+              { inversionAttempts: "dontInvert" }
+            )?.data || "";
+          }
+          if (!attendanceQrStream || byId("action-modal").getAttribute("aria-hidden") === "true") return;
+          const code = normalizeDigits(String(rawValue).trim());
+          if (code) {
+            if (!/^\d{6}$/.test(code)) {
+              status.textContent = "هذا الرمز ليس كود لاعب صالحًا. وجّه الكاميرا إلى QR الأكاديمية.";
+            } else {
+              const form = byId("action-form");
+              form.querySelector('input[name="playerCode"]').value = code;
+              form.querySelector('select[name="attendanceStatus"]').value = "حاضر";
+              status.textContent = `تم قراءة كود اللاعب ${arabicDigits(code)}، جارٍ تسجيل الحضور...`;
+              attendanceQrBusy = true;
+              try {
+                const saved = await saveCodeAttendance(new FormData(form));
+                status.textContent = saved
+                  ? "تم تسجيل الحضور. وجّه الكاميرا إلى اللاعب التالي."
+                  : "لم يُسجل الحضور. راجع التنبيه ثم امسح رمز اللاعب مرة أخرى.";
+              } finally {
+                window.setTimeout(() => { attendanceQrBusy = false; }, 1200);
+              }
+            }
+          }
+        } catch (error) {
+          console.error("تعذر قراءة رمز QR من الكاميرا.", error);
+          status.textContent = "تعذرت قراءة الرمز. ثبّت الكاميرا وحاول مرة أخرى.";
+        }
+      }
+      if (attendanceQrStream) attendanceQrFrame = requestAnimationFrame(scan);
+    };
+    attendanceQrFrame = requestAnimationFrame(scan);
+  } catch (error) {
+    stopPlayerQrScanner();
+    console.error("تعذر فتح كاميرا مسح QR.", error);
+    showToast(error?.name === "NotAllowedError"
+      ? "اسمح للموقع باستخدام الكاميرا لمسح QR، أو أدخل كود اللاعب يدويًا."
+      : "تعذر فتح الكاميرا. تأكد من استخدام الموقع عبر HTTPS ثم حاول مجددًا.");
+  }
+}
+
+function stopPlayerQrScanner() {
+  if (attendanceQrFrame !== null) {
+    cancelAnimationFrame(attendanceQrFrame);
+    attendanceQrFrame = null;
+  }
+  attendanceQrStream?.getTracks().forEach(track => track.stop());
+  attendanceQrStream = null;
+  attendanceQrBusy = false;
+  const video = byId("player-qr-video");
+  if (video) video.srcObject = null;
+  const scanner = byId("player-qr-scanner");
+  if (scanner) scanner.hidden = true;
+}
+
 async function saveCodeAttendance(form) {
   if (currentUser?.role !== "coach") { showToast("تسجيل الحضور بالكود من صلاحية المشرف فقط."); return; }
   const code = normalizeDigits(String(form.get("playerCode")).trim());
@@ -2712,24 +2855,23 @@ async function saveCodeAttendance(form) {
   const status = String(form.get("attendanceStatus") || "حاضر");
   const availableSessions = data.sessions.filter(session => !attendanceWindowError(session, localDateString()));
   const slot = attendanceSlots(availableSessions).find(item => item.id === form.get("slotId"));
-  if (!player) { showToast("كود اللاعب غير موجود. راجع الرقم وحاول مرة أخرى."); return; }
-  if (!["حاضر", "غائب"].includes(status)) { showToast("اختر حالة حضور أو غياب صحيحة."); return; }
-  if (!slot) { showToast("ساعة التدريب المختارة غير متاحة لتسجيل الحضور في الوقت الحالي."); return; }
+  if (!player) { showToast("كود اللاعب غير موجود. راجع الرقم وحاول مرة أخرى."); return false; }
+  if (!["حاضر", "غائب"].includes(status)) { showToast("اختر حالة حضور أو غياب صحيحة."); return false; }
+  if (!slot) { showToast("ساعة التدريب المختارة غير متاحة لتسجيل الحضور في الوقت الحالي."); return false; }
   if (dayOffExists(slot.id, localDateString())) {
     showToast("تم إعلان إجازة لهذه المجموعة اليوم؛ لا يمكن تسجيل حضور أو غياب.");
-    return;
+    return false;
   }
   const session = sessionForPlayerInSlot(player, slot);
-  if (!session) { showToast("اللاعب لا ينتمي إلى أي فئة من فئات التمارين المتاحة في هذه الساعة."); return; }
+  if (!session) { showToast("اللاعب لا ينتمي إلى أي فئة من فئات التمارين المتاحة في هذه الساعة."); return false; }
   if (data.attendance.some(record => record.playerId === player.id && slot.sessions.some(item => item.id === record.sessionId) && record.isoDate === localDateString())) {
     showToast(`تم تسجيل حالة ${player.name} لهذه الساعة اليوم بالفعل.`);
-    return;
+    return false;
   }
   if (status === "غائب") {
-    await registerPlayerAbsenceByCode(player, session);
-    return;
+    return await registerPlayerAbsenceByCode(player, session);
   }
-  await registerPlayerAttendance(player, session, new Date(), true);
+  return await registerPlayerAttendance(player, session, new Date(), true);
 }
 
 async function persistCodeAttendance(player, rollback) {
@@ -2762,23 +2904,23 @@ async function registerPlayerAbsenceByCode(player, session) {
   const now = new Date();
   const isoDate = localDateString(now);
   const windowError = attendanceWindowError(session, isoDate, now);
-  if (windowError) { showToast(windowError); return; }
+  if (windowError) { showToast(windowError); return false; }
   if (!attendanceTimeIsWithinSession(session, isoDate, now.getTime())) {
     showToast("تسجيل الغياب بالكود متاح خلال وقت الحصة فقط.");
-    return;
+    return false;
   }
   if (dayOffExists(attendanceSlotForSession(session)?.id, isoDate)) {
     showToast("تم إعلان إجازة لهذه المجموعة اليوم؛ لا يمكن تسجيل غياب.");
-    return;
+    return false;
   }
   const weekday = weekdayForDate(isoDate);
   if (!player.weeklyDays?.includes(weekday) || !sessionDays(session).includes(weekday)) {
     showToast("لا يمكن تسجيل غياب للاعب في يوم غير أيام تدريبه المحددة.");
-    return;
+    return false;
   }
   if (!isSubscriptionActiveOn(player, isoDate)) {
     showToast("تسجيل الغياب بالكود يتطلب اشتراكًا ساريًا في تاريخ الحصة.");
-    return;
+    return false;
   }
   const timestamp = now.getTime();
   const record = {
@@ -2811,23 +2953,24 @@ async function registerPlayerAbsenceByCode(player, session) {
   if (saved) {
     showToast(`تم تسجيل غياب ${player.name} دون خصم تمرين. يمكنه طلب التعويض من سجل الحضور.`);
   }
+  return saved;
 }
 
 async function registerPlayerAttendance(player, session, dateTime = new Date(), keepCodeEntryOpen = false) {
   const isoDate = localDateString(dateTime);
   if (dayOffExists(attendanceSlotForSession(session)?.id, isoDate)) {
     showToast("تم إعلان إجازة لهذه المجموعة في التاريخ المحدد؛ لا يمكن تسجيل الحضور.");
-    return;
+    return false;
   }
   const windowError = attendanceWindowError(session, isoDate);
-  if (windowError) { showToast(windowError); return; }
+  if (windowError) { showToast(windowError); return false; }
   if (!attendanceTimeIsWithinSession(session, isoDate, dateTime.getTime())) {
     showToast("وقت الحضور يجب أن يكون بين بداية التسجيل قبل الحصة بنصف ساعة ووقت نهاية الحصة.");
-    return;
+    return false;
   }
   if (data.attendance.some(record => record.playerId === player.id && record.sessionId === session.id && record.isoDate === isoDate)) {
     showToast(`تم تسجيل حضور ${player.name} لهذه المجموعة في هذا التاريخ بالفعل.`);
-    return;
+    return false;
   }
   const timestamp = dateTime.getTime();
   const weekday = weekdayForDate(isoDate);
@@ -2869,7 +3012,7 @@ async function registerPlayerAttendance(player, session, dateTime = new Date(), 
         ? `تم تسجيل استثناء حضور ${player.name} دون دفع. سيُخصم التمرين من الاشتراك عند تجديده بعد سداد كامل المبلغ.`
         : `تم تسجيل ${status} للاعب ${player.name}.`);
     }
-    return;
+    return saved;
   }
   if (saveData()) {
     closeModal();
@@ -2877,11 +3020,13 @@ async function registerPlayerAttendance(player, session, dateTime = new Date(), 
     showToast(record.unpaidException
       ? `تم تسجيل استثناء حضور ${player.name} دون دفع. سيُخصم التمرين من الاشتراك عند تجديده بعد سداد كامل المبلغ.`
       : `تم تسجيل ${status} للاعب ${player.name}.`);
+    return true;
   } else {
     data.attendance.pop();
     player.sessionsUsed = previousUsed;
     player.sessionsLeft = previousLeft;
     Object.assign(player, previousSubscription);
+    return false;
   }
 }
 
@@ -3766,6 +3911,7 @@ function closeModal() {
     clearInterval(attendanceClockInterval);
     attendanceClockInterval = null;
   }
+  stopPlayerQrScanner();
   byId("action-modal").classList.remove("open");
   byId("action-modal").setAttribute("aria-hidden", "true");
 }

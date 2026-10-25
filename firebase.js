@@ -540,43 +540,45 @@ function academyServices() {
         if ((await getDoc(profileRef)).exists()) {
           throw new Error("حساب ولي الأمر مسجل بالفعل. سجّل الدخول بدلًا من إنشاء حساب جديد.");
         }
-        let saved = false;
-        for (let attempt = 0; attempt < 10 && !saved; attempt += 1) {
-          const codes = new Set();
-          while (codes.size < registeredPlayers.length) {
-            const value = crypto.getRandomValues(new Uint32Array(1))[0] % 1000000;
-            codes.add(String(value).padStart(6, "0"));
-          }
-          const playerCodes = [...codes];
-          const playersWithCodes = registeredPlayers.map((player, index) => ({
-            ...player,
-            playerCode: playerCodes[index]
-          }));
-          const batch = writeBatch(db);
-          batch.set(profileRef, { ...guardianProfile, createdAt: serverTimestamp() });
-          playersWithCodes.forEach(player => {
-            batch.set(doc(db, "players", player.playerCode), {
+        const savedPlayers = [];
+        for (let offset = 0; offset < registeredPlayers.length; offset += 3) {
+          const playerGroup = registeredPlayers.slice(offset, offset + 3);
+          let saved = false;
+          for (let attempt = 0; attempt < 10 && !saved; attempt += 1) {
+            const codes = new Set();
+            while (codes.size < playerGroup.length) {
+              const value = crypto.getRandomValues(new Uint32Array(1))[0] % 1000000;
+              codes.add(String(value).padStart(6, "0"));
+            }
+            const playerCodes = [...codes];
+            const playersWithCodes = playerGroup.map((player, index) => ({
               ...player,
-              createdAt: serverTimestamp()
+              playerCode: playerCodes[index]
+            }));
+            const batch = writeBatch(db);
+            if (offset === 0) batch.set(profileRef, { ...guardianProfile, createdAt: serverTimestamp() });
+            playersWithCodes.forEach(player => {
+              batch.set(doc(db, "players", player.playerCode), {
+                ...player,
+                createdAt: serverTimestamp()
+              });
+              batch.set(doc(db, "playerCodes", player.playerCode), {
+                playerId: player.id,
+                playerCode: player.playerCode
+              });
             });
-            batch.set(doc(db, "playerCodes", player.playerCode), {
-              playerId: player.id,
-              playerCode: player.playerCode
-            });
-          });
-          try {
-            await batch.commit();
-            registeredPlayers.splice(0, registeredPlayers.length, ...playersWithCodes);
-            saved = true;
-          } catch (error) {
-            if (error?.code !== "permission-denied" || attempt === 9) {
-              if (error?.code === "permission-denied") {
-                throw new Error("تعذر حفظ الحساب أو حجز كود لاعب فريد. تحقق من نشر قواعد Firestore المحدّثة ثم حاول مرة أخرى.");
+            try {
+              await batch.commit();
+              savedPlayers.push(...playersWithCodes);
+              saved = true;
+            } catch (error) {
+              if (error?.code !== "permission-denied" || attempt === 9) {
+                throw error;
               }
-              throw error;
             }
           }
         }
+        registeredPlayers.splice(0, registeredPlayers.length, ...savedPlayers);
         baseline.set(`users/${guardianProfile.id}`, baselineValue("users", guardianProfile));
         registeredPlayers.forEach(player => {
           baseline.set(`players/${player.playerCode}`, baselineValue("players", player));
@@ -590,8 +592,14 @@ function academyServices() {
           } catch (cleanupError) {
             console.error("تعذر تنظيف حساب Authentication بعد فشل التسجيل.", cleanupError);
           }
+          if (error?.code === "permission-denied") {
+            throw new Error("تعذر حفظ حساب ولي الأمر والأبناء في Firestore. انشر قواعد Firestore المحدّثة ثم أعد المحاولة.");
+          }
         } else {
           await signOut(auth);
+          if (error?.code === "permission-denied") {
+            throw new Error("تم إنشاء حساب ولي الأمر وبعض بيانات الأبناء، لكن تعذر حفظ الباقي. سجّل الدخول ثم أضف اللاعبين غير المسجلين.");
+          }
         }
         throw error;
       }
