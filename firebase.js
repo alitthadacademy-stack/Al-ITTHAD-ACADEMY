@@ -7,7 +7,6 @@ import {
   getAuth,
   onIdTokenChanged,
   signInAnonymously,
-  signInWithCustomToken,
   signInWithEmailAndPassword,
   signOut,
   updateProfile
@@ -73,7 +72,7 @@ if (useFirebaseEmulators) {
   connectFunctionsEmulator(functions, "127.0.0.1", 5001);
 }
 let foregroundMessageUnsubscribe = null;
-let activeSessionUnsubscribe = null;
+let activeSessionUnsubscribers = [];
 
 function requireAppCheckConfiguration() {
   if (!useFirebaseEmulators && !FIREBASE_APPCHECK_SITE_KEY) {
@@ -85,9 +84,24 @@ async function closeActiveDeviceSession() {
   const user = auth.currentUser;
   if (!user) return;
   const { claims } = await user.getIdTokenResult();
-  if (claims.playerSession === true) {
-    await httpsCallable(functions, "closePlayerSession")({});
-  }
+  if (!user.isAnonymous && claims.playerSession !== true) return;
+
+  const sessionRef = doc(db, "playerSessions", user.uid);
+  await runTransaction(db, async transaction => {
+    const sessionSnapshot = await transaction.get(sessionRef);
+    if (!sessionSnapshot.exists() || sessionSnapshot.data().active !== true) return;
+
+    const session = sessionSnapshot.data();
+    const playerRef = doc(db, "players", session.playerCode);
+    const playerSnapshot = await transaction.get(playerRef);
+    if (playerSnapshot.exists() && playerSnapshot.data().activePlayerSessionUid === user.uid) {
+      transaction.update(playerRef, { activePlayerSessionUid: deleteField() });
+    }
+    transaction.update(sessionRef, {
+      active: false,
+      revokedAt: serverTimestamp()
+    });
+  });
 }
 
 async function notificationTokenDocumentId(ownerUid, token) {
@@ -468,24 +482,43 @@ function academyServices() {
     auth,
     observeAuth(callback) {
       return onIdTokenChanged(auth, async user => {
-        activeSessionUnsubscribe?.();
-        activeSessionUnsubscribe = null;
+        activeSessionUnsubscribers.forEach(unsubscribe => unsubscribe());
+        activeSessionUnsubscribers = [];
         if (user) {
           try {
             const { claims } = await user.getIdTokenResult();
-            let sessionRef = null;
-            if (claims.playerSession === true) {
-              sessionRef = doc(db, "playerSessions", user.uid);
-            }
-            if (sessionRef) {
-              activeSessionUnsubscribe = onSnapshot(sessionRef, snapshot => {
-                if (!snapshot.exists() || snapshot.data().active !== true) {
-                  signOut(auth).catch(error => console.error("تعذر إنهاء جلسة جهاز تم استبدالها.", error));
+            if (user.isAnonymous || claims.playerSession === true) {
+              const sessionRef = doc(db, "playerSessions", user.uid);
+              let watchedPlayerCode = "";
+              activeSessionUnsubscribers.push(onSnapshot(sessionRef, snapshot => {
+                if (!snapshot.exists()) return;
+                const session = snapshot.data();
+                if (session.active !== true || typeof session.playerCode !== "string") {
+                  if (auth.currentUser?.uid === user.uid) {
+                    signOut(auth).catch(error => console.error("تعذر إنهاء جلسة لاعب غير صالحة.", error));
+                  }
+                  return;
                 }
+                if (watchedPlayerCode === session.playerCode) return;
+                watchedPlayerCode = session.playerCode;
+                activeSessionUnsubscribers.push(onSnapshot(doc(db, "players", session.playerCode), playerSnapshot => {
+                  if (!playerSnapshot.exists() || playerSnapshot.data().activePlayerSessionUid !== user.uid) {
+                    if (auth.currentUser?.uid === user.uid) {
+                      signOut(auth).catch(error => console.error("تعذر إنهاء جلسة لاعب تم استبدالها.", error));
+                    }
+                  }
+                }, error => {
+                  console.error("تعذر التحقق من صلاحية جلسة هذا الجهاز.", error);
+                  if (auth.currentUser?.uid === user.uid) {
+                    signOut(auth).catch(signOutError => console.error("تعذر إنهاء جلسة جهاز غير صالحة.", signOutError));
+                  }
+                }));
               }, error => {
                 console.error("تعذر التحقق من صلاحية جلسة هذا الجهاز.", error);
-                signOut(auth).catch(signOutError => console.error("تعذر إنهاء جلسة جهاز غير صالحة.", signOutError));
-              });
+                if (auth.currentUser?.uid === user.uid) {
+                  signOut(auth).catch(signOutError => console.error("تعذر إنهاء جلسة جهاز غير صالحة.", signOutError));
+                }
+              }));
             }
           } catch (error) {
             console.error("تعذر تحميل بيانات جلسة الجهاز.", error);
@@ -636,6 +669,9 @@ function academyServices() {
     async signInWithPlayerCode(code) {
       try {
         requireAppCheckConfiguration();
+        if (typeof code !== "string" || !/^\d{6}$/.test(code)) {
+          throw new Error("كود اللاعب غير صحيح.");
+        }
         if (auth.currentUser) {
           try {
             await closeActiveDeviceSession();
@@ -645,29 +681,43 @@ function academyServices() {
           await signOut(auth);
         }
         const credential = await signInAnonymously(auth);
-        const result = await httpsCallable(functions, "loginPlayerWithCode")({ code });
-        await signInWithCustomToken(auth, result.data.token);
-        const codeSnapshot = await getDoc(doc(db, "players", code));
-        if (!codeSnapshot.exists()) throw new Error("لم يتم العثور على بيانات اللاعب.");
-        const player = codeSnapshot.data();
-        if (player.activePlayerSessionUid !== auth.currentUser?.uid) {
-          throw new Error("تم تسجيل دخول اللاعب من جهاز آخر. أعد تسجيل الدخول بهذا الجهاز.");
-        }
+        const codeSnapshot = await getDoc(doc(db, "playerCodes", code));
+        if (!codeSnapshot.exists()) throw new Error("كود اللاعب غير صحيح.");
+        const player = await runTransaction(db, async transaction => {
+          const codeRef = doc(db, "playerCodes", code);
+          const playerRef = doc(db, "players", code);
+          const [codeSnapshot, playerSnapshot] = await Promise.all([
+            transaction.get(codeRef),
+            transaction.get(playerRef)
+          ]);
+          if (!codeSnapshot.exists() || !playerSnapshot.exists()) {
+            throw new Error("كود اللاعب غير صحيح.");
+          }
+          const playerData = playerSnapshot.data();
+          if (codeSnapshot.data().playerId !== playerData.id || playerData.playerCode !== code) {
+            throw new Error("تعذر التحقق من ملف اللاعب. تواصل مع المشرف.");
+          }
+
+          const sessionRef = doc(db, "playerSessions", credential.user.uid);
+          transaction.set(sessionRef, {
+            playerCode: code,
+            playerId: playerData.id,
+            active: true,
+            createdAt: serverTimestamp()
+          });
+          transaction.update(playerRef, { activePlayerSessionUid: credential.user.uid });
+          return playerData;
+        });
         return { ...player, id: player.id || code, role: "member", authUid: credential.user.uid };
       } catch (error) {
         if (auth.currentUser) {
-          try {
-            await closeActiveDeviceSession();
-          } catch (closeError) {
-            console.error("تعذر تحرير جلسة اللاعب بعد فشل الدخول.", closeError);
-          }
           await signOut(auth);
         }
         if (error?.code === "auth/configuration-not-found" || error?.code === "auth/operation-not-allowed") {
           throw new Error("دخول اللاعبين يحتاج إلى تفعيل Firebase Authentication → Sign-in method → Anonymous في مشروع الأكاديمية.");
         }
         if (error?.code === "permission-denied") {
-          throw new Error("تعذر التحقق من جلسة اللاعب. تأكد من نشر وظائف Firebase وقواعد Firestore المحدّثة.");
+          throw new Error("تعذر التحقق من جلسة اللاعب. تأكد من نشر قواعد Firestore المحدّثة.");
         }
         throw error;
       }
@@ -779,7 +829,7 @@ function academyServices() {
     },
     async currentProfile(user) {
       const { claims } = await user.getIdTokenResult();
-      if (claims.playerSession === true) {
+      if (user.isAnonymous || claims.playerSession === true) {
         let session;
         try {
           session = await getDoc(doc(db, "playerSessions", user.uid));

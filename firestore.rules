@@ -5,6 +5,21 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isAnonymousUser() {
+      return signedIn()
+        && request.auth.token.firebase.sign_in_provider == 'anonymous';
+    }
+
+    function hasPlayerSessionClaim() {
+      return signedIn()
+        && request.auth.token.keys().hasAny(['playerSession'])
+        && request.auth.token.playerSession == true;
+    }
+
+    function isPlayerSessionUser() {
+      return isAnonymousUser() || hasPlayerSessionClaim();
+    }
+
     function userProfile(uid) {
       return get(/databases/$(database)/documents/users/$(uid)).data;
     }
@@ -106,17 +121,18 @@ service cloud.firestore {
 
     function isMember() {
       return signedIn()
-        && request.auth.token.playerSession == true
-        && request.auth.token.playerCode is string
+        && isPlayerSessionUser()
         && exists(/databases/$(database)/documents/playerSessions/$(request.auth.uid))
         && get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.active == true
-        && get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode == request.auth.token.playerCode
-        && exists(/databases/$(database)/documents/players/$(request.auth.token.playerCode))
-        && get(/databases/$(database)/documents/players/$(request.auth.token.playerCode)).data.activePlayerSessionUid == request.auth.uid;
+        && (isAnonymousUser()
+          || (request.auth.token.playerCode is string
+            && get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode == request.auth.token.playerCode))
+        && exists(/databases/$(database)/documents/players/$(get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode))
+        && get(/databases/$(database)/documents/players/$(get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode)).data.activePlayerSessionUid == request.auth.uid;
     }
 
     function memberPlayerId() {
-      return get(/databases/$(database)/documents/players/$(request.auth.token.playerCode)).data.id;
+      return get(/databases/$(database)/documents/players/$(get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode)).data.id;
     }
 
     function invitedTrainer(uid) {
@@ -209,7 +225,11 @@ service cloud.firestore {
       allow get: if isCoach()
         || trainerAssignedToPlayer(playerCode)
         || (isGuardian() && resource.data.guardianId == request.auth.uid)
-        || (isMember() && get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode == playerCode);
+        || (isMember() && get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode == playerCode)
+        || (isAnonymousUser()
+          && exists(/databases/$(database)/documents/playerCodes/$(playerCode))
+          && get(/databases/$(database)/documents/playerCodes/$(playerCode)).data.playerId == resource.data.id
+          && resource.data.playerCode == playerCode);
       allow list: if isCoach()
         || trainerAssignedToPlayer(playerCode)
         || (isGuardian() && resource.data.guardianId == request.auth.uid);
@@ -251,7 +271,21 @@ service cloud.firestore {
           && getAfter(/databases/$(database)/documents/attendance/$(request.resource.data.lastAttendanceId)).data.playerCode == playerCode
           && getAfter(/databases/$(database)/documents/attendance/$(request.resource.data.lastAttendanceId)).data.trainerId == request.auth.uid
           && trainerOwnsSession(getAfter(/databases/$(database)/documents/attendance/$(request.resource.data.lastAttendanceId)).data.sessionId)
-          && trainerAssignedToPlayer(playerCode));
+          && trainerAssignedToPlayer(playerCode))
+        || (isAnonymousUser()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['activePlayerSessionUid'])
+          && request.resource.data.activePlayerSessionUid == request.auth.uid
+          && existsAfter(/databases/$(database)/documents/playerSessions/$(request.auth.uid))
+          && getAfter(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode == playerCode
+          && getAfter(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerId == resource.data.id
+          && getAfter(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.active == true)
+        || (isPlayerSessionUser()
+          && resource.data.activePlayerSessionUid == request.auth.uid
+          && !request.resource.data.keys().hasAny(['activePlayerSessionUid'])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['activePlayerSessionUid'])
+          && existsAfter(/databases/$(database)/documents/playerSessions/$(request.auth.uid))
+          && getAfter(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode == playerCode
+          && getAfter(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.active == false);
       allow delete: if isCoach();
     }
 
@@ -260,7 +294,8 @@ service cloud.firestore {
         && (isCoach()
           || (isGuardian()
             && exists(/databases/$(database)/documents/players/$(code))
-            && get(/databases/$(database)/documents/players/$(code)).data.guardianId == request.auth.uid));
+            && get(/databases/$(database)/documents/players/$(code)).data.guardianId == request.auth.uid)
+          || isAnonymousUser());
       allow list: if isCoach();
       allow create: if guardianProfileAfterRegistration()
         && request.resource.data.keys().hasAll(['playerId', 'playerCode'])
@@ -625,14 +660,44 @@ service cloud.firestore {
     }
 
     match /playerSessions/{uid} {
-      allow get: if signedIn()
+      allow get: if isPlayerSessionUser() && request.auth.uid == uid;
+      allow list: if false;
+      allow create: if isAnonymousUser()
         && request.auth.uid == uid
-        && request.auth.token.playerSession == true
-        && resource.data.active == true
-        && resource.data.playerCode == request.auth.token.playerCode
-        && exists(/databases/$(database)/documents/players/$(resource.data.playerCode))
-        && get(/databases/$(database)/documents/players/$(resource.data.playerCode)).data.activePlayerSessionUid == uid;
-      allow list, create, update, delete: if false;
+        && request.resource.data.keys().hasAll(['playerCode', 'playerId', 'active', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['playerCode', 'playerId', 'active', 'createdAt'])
+        && request.resource.data.playerCode is string
+        && request.resource.data.playerCode.matches('^\\d{6}$')
+        && request.resource.data.playerId is string
+        && request.resource.data.active == true
+        && request.resource.data.createdAt == request.time
+        && exists(/databases/$(database)/documents/players/$(request.resource.data.playerCode))
+        && get(/databases/$(database)/documents/players/$(request.resource.data.playerCode)).data.id == request.resource.data.playerId
+        && getAfter(/databases/$(database)/documents/players/$(request.resource.data.playerCode)).data.activePlayerSessionUid == uid;
+      allow update: if (isAnonymousUser()
+          && request.auth.uid == uid
+          && request.resource.data.keys().hasAll(['playerCode', 'playerId', 'active', 'createdAt'])
+          && request.resource.data.keys().hasOnly(['playerCode', 'playerId', 'active', 'createdAt'])
+          && request.resource.data.playerCode is string
+          && request.resource.data.playerCode.matches('^\\d{6}$')
+          && request.resource.data.playerId is string
+          && request.resource.data.active == true
+          && request.resource.data.createdAt == request.time
+          && exists(/databases/$(database)/documents/players/$(request.resource.data.playerCode))
+          && get(/databases/$(database)/documents/players/$(request.resource.data.playerCode)).data.id == request.resource.data.playerId
+          && getAfter(/databases/$(database)/documents/players/$(request.resource.data.playerCode)).data.activePlayerSessionUid == uid)
+        || (isPlayerSessionUser()
+          && request.auth.uid == uid
+          && resource.data.active == true
+          && request.resource.data.active == false
+          && request.resource.data.playerCode == resource.data.playerCode
+          && request.resource.data.playerId == resource.data.playerId
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.revokedAt == request.time
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active', 'revokedAt'])
+          && exists(/databases/$(database)/documents/players/$(resource.data.playerCode))
+          && getAfter(/databases/$(database)/documents/players/$(resource.data.playerCode)).data.get('activePlayerSessionUid', '') != uid);
+      allow delete: if false;
     }
   }
 }
