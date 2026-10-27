@@ -12,34 +12,14 @@
       "FIREBASE_SETUP.md",
       "firestore.rules",
       "storage.rules"
-    ],
-    "headers": [
-      {
-        "source": "/firebase-messaging-sw.js",
-        "headers": [
-          {
-            "key": "Cache-Control",
-            "value": "no-cache"
-          }
-        ]
-      }
     ]
-  },
-  "functions": {
-    "source": "functions"
   },
   "firestore": {
     "rules": "firestore.rules"
   },
-  "storage": {
-    "rules": "storage.rules"
-  },
   "emulators": {
     "auth": {
       "port": 9099
-    },
-    "functions": {
-      "port": 5001
     },
     "firestore": {
       "port": 8080

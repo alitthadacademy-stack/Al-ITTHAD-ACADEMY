@@ -44,51 +44,6 @@ let attendanceQrStream = null;
 let attendanceQrBusy = false;
 let attendanceQrFrame = null;
 
-function notificationConsentStorageKey(userId) {
-  return `${STORAGE_KEY}.push.${userId}`;
-}
-
-function notificationSubscriptionStorageKey(userId) {
-  return `${STORAGE_KEY}.push.subscription.${userId}`;
-}
-
-function supportsPushNotificationsOnThisOrigin() {
-  return window.location.protocol === "https:"
-    || (window.location.protocol === "http:" && ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname));
-}
-
-async function requestNotificationPermission(consent) {
-  if (consent !== "accept" || !("Notification" in window) || !supportsPushNotificationsOnThisOrigin()) return null;
-  let permission = Notification.permission;
-  if (permission === "default" && window.isSecureContext) {
-    permission = await Notification.requestPermission();
-  }
-  return permission;
-}
-
-function saveNotificationConsent(userId, consent, permission) {
-  localStorage.setItem(
-    notificationConsentStorageKey(userId),
-    consent === "decline" ? "declined" : permission === "granted" ? "accepted" : "pending"
-  );
-}
-
-function hasAcceptedNotifications(user) {
-  if (!user || !["guardian", "member", "coach", "trainer"].includes(user.role)) return false;
-  const choice = localStorage.getItem(notificationConsentStorageKey(user.id));
-  if (choice === "declined") return false;
-  return choice === "accepted" || choice === "enabled"
-    || ("Notification" in window && Notification.permission === "granted");
-}
-
-function hasNotificationSubscription(user) {
-  if (!user || !["guardian", "member", "coach", "trainer"].includes(user.role)) return false;
-  return "Notification" in window
-    && Notification.permission === "granted"
-    && (localStorage.getItem(notificationSubscriptionStorageKey(user.id)) === "enabled"
-      || localStorage.getItem(notificationConsentStorageKey(user.id)) === "enabled");
-}
-
 function emptyData() {
   return { users: [], sessions: [], announcements: [], payments: [], attendance: [], administrativeAbsences: [], attendanceExceptions: [], trainerAttendance: [], expenses: [], revenues: [], instaPayAddress: DEFAULT_INSTAPAY_NUMBER, paymentDestinationType: "instapay", workDays: [...DEFAULT_WORK_DAYS], pricesByDays: { ...DEFAULT_DAY_PRICES } };
 }
@@ -821,25 +776,6 @@ function signIn(user) {
   document.querySelectorAll(".trainer-only").forEach(item => { item.hidden = user.role !== "trainer"; });
   activeView = "home";
   renderView();
-  if (supportsPushNotificationsOnThisOrigin() && hasAcceptedNotifications(user)
-    && "Notification" in window && Notification.permission === "granted") {
-    window.firebaseReady
-      .then(async firebase => {
-        await firebase.subscribeUserToNotifications(user);
-        localStorage.setItem(notificationConsentStorageKey(user.id), "accepted");
-        localStorage.setItem(notificationSubscriptionStorageKey(user.id), "enabled");
-        if (currentUser?.id === user.id) renderView();
-      })
-      .catch(error => {
-        localStorage.removeItem(notificationSubscriptionStorageKey(user.id));
-        if (localStorage.getItem(notificationConsentStorageKey(user.id)) === "enabled") {
-          localStorage.setItem(notificationConsentStorageKey(user.id), "accepted");
-        }
-        console.error("تعذر استعادة اشتراك إشعارات ولي الأمر.", error);
-        showToast(error instanceof Error ? `تعذر استعادة الإشعارات: ${error.message}` : "تعذر استعادة الإشعارات على هذا الجهاز.");
-        if (currentUser?.id === user.id) renderView();
-      });
-  }
 }
 
 async function activateCloudProfile(profile) {
@@ -955,6 +891,178 @@ function renderPlayerQrCodes(container = document) {
       target.textContent = "تعذر إنشاء رمز QR لهذا اللاعب.";
     }
   });
+}
+
+let playerCardCrestPromise = null;
+
+function cardPlayers() {
+  return data.users
+    .filter(user => user.role === "member" && /^\d{6}$/.test(user.playerCode || ""))
+    .sort((left, right) => left.name.localeCompare(right.name, "ar"));
+}
+
+async function playerCardCrestDataUrl() {
+  if (!playerCardCrestPromise) {
+    playerCardCrestPromise = fetch("./functions/app-icon.png")
+      .then(response => {
+        if (!response.ok) throw new Error("تعذر تحميل شعار النادي.");
+        return response.blob();
+      })
+      .then(blob => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error("تعذر تجهيز شعار النادي."));
+        reader.readAsDataURL(blob);
+      }))
+      .catch(error => {
+        console.warn("تعذر تحميل شعار الكارنيه.", error);
+        return "";
+      });
+  }
+  return playerCardCrestPromise;
+}
+
+function playerCardQrDataUrl(code) {
+  if (typeof window.qrcode !== "function") throw new Error("أداة إنشاء QR غير متاحة.");
+  const qr = window.qrcode(0, "H");
+  qr.addData(code);
+  qr.make();
+  return `data:image/svg+xml;base64,${btoa(qr.createSvgTag(8, 2))}`;
+}
+
+function playerCardSvg(player, side, crestDataUrl = "") {
+  const female = player.gender === "female";
+  const palette = female
+    ? { base: "#fbf8f7", shade: "#f2e9ec", ink: "#25483e", accent: "#c77992", green: "#6e9a80", pale: "#fffdfc", line: "#d8c8cd" }
+    : { base: "#071b17", shade: "#123d30", ink: "#f8f4e9", accent: "#d9b866", green: "#368866", pale: "#eff4ee", line: "#a8b7ae" };
+  const name = escapeHtml(player.name || "اللاعب");
+  const birthDate = escapeHtml(player.birthDate || "غير محدد");
+  const code = escapeHtml(player.playerCode || "");
+  const crest = crestDataUrl
+    ? `<image href="${crestDataUrl}" x="82" y="78" width="228" height="228" preserveAspectRatio="xMidYMid meet"/>`
+    : `<text x="196" y="190" text-anchor="middle" fill="${palette.accent}" font-size="62" font-weight="800">الاتحاد</text><text x="196" y="232" text-anchor="middle" fill="${palette.ink}" font-size="25">ALEXANDRIA CLUB</text>`;
+  const shell = `<defs>
+      <linearGradient id="card" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${palette.base}"/><stop offset=".62" stop-color="${palette.shade}"/><stop offset="1" stop-color="${palette.base}"/></linearGradient>
+      <linearGradient id="trim" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${palette.accent}"/><stop offset=".5" stop-color="${palette.pale}"/><stop offset="1" stop-color="${palette.green}"/></linearGradient>
+      <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%"><feDropShadow dx="0" dy="13" stdDeviation="13" flood-color="#10251d" flood-opacity=".2"/></filter>
+    </defs>
+    <rect x="12" y="12" width="1026" height="636" rx="48" fill="url(#card)" stroke="url(#trim)" stroke-width="12" filter="url(#shadow)"/>
+    <path d="M22 492 Q220 415 382 648 H80 Q35 630 22 580Z" fill="${palette.green}" opacity=".16"/>
+    <path d="M720 15 Q866 168 1032 194 V84 Q1020 15 950 15Z" fill="${palette.accent}" opacity=".15"/>
+    <path d="M24 560 Q245 452 400 642 M640 18 Q793 140 1028 166" fill="none" stroke="url(#trim)" stroke-width="5" opacity=".75"/>`;
+  const header = `<text x="946" y="94" text-anchor="end" direction="rtl" fill="${palette.ink}" font-family="Arial,Tahoma,sans-serif" font-size="27" font-weight="700">أكاديمية نادي الاتحاد السكندري</text>
+      <text x="946" y="143" text-anchor="end" fill="${palette.green}" font-family="Arial,sans-serif" font-size="32" font-weight="800" letter-spacing="1">AL ITTIHAD ACADEMY</text>
+      <text x="946" y="182" text-anchor="end" direction="rtl" fill="${palette.accent}" font-family="Arial,Tahoma,sans-serif" font-size="22" font-weight="700">تأسست عام 1914</text>`;
+
+  if (side === "front") {
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="1050" height="660" viewBox="0 0 1050 660">${shell}${crest}${header}
+      <path d="M350 220 H947" stroke="${palette.line}" stroke-width="2" opacity=".9"/>
+      <text x="944" y="303" text-anchor="end" direction="rtl" fill="${palette.green}" font-family="Arial,Tahoma,sans-serif" font-size="24" font-weight="700">${female ? "اللاعبة" : "اللاعب"}</text>
+      <text x="944" y="366" text-anchor="end" direction="rtl" fill="${palette.ink}" font-family="Arial,Tahoma,sans-serif" font-size="46" font-weight="800" textLength="570" lengthAdjust="spacingAndGlyphs">${name}</text>
+      <rect x="480" y="416" width="466" height="146" rx="20" fill="${female ? "#ffffff" : "#ffffff12"}" stroke="${palette.line}" stroke-width="2"/>
+      <text x="910" y="456" text-anchor="end" direction="rtl" fill="${palette.green}" font-family="Arial,Tahoma,sans-serif" font-size="20">كود اللاعب</text>
+      <text x="910" y="500" text-anchor="end" fill="${palette.ink}" font-family="Arial,sans-serif" font-size="38" font-weight="800" letter-spacing="5">${code}</text>
+      <text x="910" y="540" text-anchor="end" direction="rtl" fill="${palette.green}" font-family="Arial,Tahoma,sans-serif" font-size="18">تاريخ الميلاد: ${birthDate}</text>
+      <text x="103" y="594" text-anchor="start" direction="rtl" fill="${palette.ink}" font-family="Arial,Tahoma,sans-serif" font-size="16" opacity=".8">بطاقة تعريف لاعب الأكاديمية</text>
+      </svg>`;
+  }
+
+  const qrDataUrl = playerCardQrDataUrl(player.playerCode || "000000");
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1050" height="660" viewBox="0 0 1050 660">${shell}
+    <rect x="73" y="128" width="385" height="400" rx="28" fill="#fff" stroke="${palette.accent}" stroke-width="5"/>
+    <image href="${qrDataUrl}" x="112" y="167" width="307" height="307" preserveAspectRatio="xMidYMid meet"/>
+    <text x="266" y="505" text-anchor="middle" fill="#223d34" font-family="Arial,sans-serif" font-size="21" font-weight="700">SCAN FOR ATTENDANCE</text>
+    <text x="945" y="158" text-anchor="end" direction="rtl" fill="${palette.ink}" font-family="Arial,Tahoma,sans-serif" font-size="30" font-weight="800">بيانات الإدارة</text>
+    <path d="M560 190 H945" stroke="${palette.accent}" stroke-width="4"/>
+    <text x="945" y="270" text-anchor="end" direction="rtl" fill="${palette.green}" font-family="Arial,Tahoma,sans-serif" font-size="22">رئيس الأكاديمية</text>
+    <text x="945" y="323" text-anchor="end" direction="rtl" fill="${palette.ink}" font-family="Arial,Tahoma,sans-serif" font-size="34" font-weight="800">ك/ حازم الدخاخني</text>
+    <text x="945" y="405" text-anchor="end" direction="rtl" fill="${palette.green}" font-family="Arial,Tahoma,sans-serif" font-size="22">للتواصل</text>
+    <text x="945" y="459" text-anchor="end" fill="${palette.ink}" font-family="Arial,sans-serif" font-size="32" font-weight="700">+20 10 17692213</text>
+    <text x="945" y="535" text-anchor="end" direction="rtl" fill="${palette.ink}" font-family="Arial,Tahoma,sans-serif" font-size="18">الاتحاد السكندري · تأسس 1914</text>
+    </svg>`;
+}
+
+function cardSvgDataUrl(svg) {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function cardSvgToPng(svg) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
+    image.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 2100;
+      canvas.height = 1320;
+      const context = canvas.getContext("2d");
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      URL.revokeObjectURL(objectUrl);
+      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("تعذر إنشاء صورة الكارنيه.")), "image/png");
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("تعذر تجهيز تصميم الكارنيه."));
+    };
+    image.src = objectUrl;
+  });
+}
+
+function playerCardFileName(player) {
+  return String(player.name || "player").trim().replace(/[\\/:*?"<>|]+/g, "-").replace(/\s+/g, "_");
+}
+
+async function downloadPlayerCardArchive(players) {
+  if (currentUser?.role !== "coach") throw new Error("تحميل الكارنيهات متاح للمشرف فقط.");
+  if (!players.length) throw new Error("لا يوجد لاعبون صالحون لإنشاء الكارنيهات.");
+  if (typeof window.JSZip !== "function") throw new Error("تعذر تحميل أداة إنشاء الملف المضغوط. تحقق من الاتصال وأعد المحاولة.");
+  const crestDataUrl = await playerCardCrestDataUrl();
+  const zip = new window.JSZip();
+  for (const [index, player] of players.entries()) {
+    const number = String(index + 1).padStart(3, "0");
+    const fileBase = `${number}_${playerCardFileName(player)}_${player.playerCode}`;
+    const front = await cardSvgToPng(playerCardSvg(player, "front", crestDataUrl));
+    zip.file(`${fileBase}_01_front.png`, front);
+    const back = await cardSvgToPng(playerCardSvg(player, "back", crestDataUrl));
+    zip.file(`${fileBase}_02_back.png`, back);
+  }
+  const archive = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
+  const objectUrl = URL.createObjectURL(archive);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = players.length === 1
+    ? `${playerCardFileName(players[0])}_${players[0].playerCode}_card.zip`
+    : `alittihad_player_cards_${players.length}.zip`;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+async function openPlayerCardPreview(playerId) {
+  if (currentUser?.role !== "coach") { showToast("عرض الكارنيهات متاح للمشرف فقط."); return; }
+  const player = cardPlayers().find(item => item.id === playerId);
+  if (!player) { showToast("لم يتم العثور على اللاعب."); return; }
+  try {
+    const crestDataUrl = await playerCardCrestDataUrl();
+    const front = cardSvgDataUrl(playerCardSvg(player, "front", crestDataUrl));
+    const back = cardSvgDataUrl(playerCardSvg(player, "back", crestDataUrl));
+    openModal(`كارنيه ${player.name}`, `<div class="player-card-preview-grid"><figure><img src="${front}" alt="الوجه الأمامي لكارنيه ${escapeHtml(player.name)}"><figcaption>الوجه الأمامي</figcaption></figure><figure><img src="${back}" alt="الوجه الخلفي لكارنيه ${escapeHtml(player.name)}"><figcaption>الوجه الخلفي · QR للحضور</figcaption></figure></div>`, "تحميل الكارنيه", async () => {
+      await downloadPlayerCardArchive([player]);
+      closeModal();
+      showToast("تم تحميل وجهي الكارنيه في ملف ZIP.");
+    }, "كارنيهات الأكاديمية");
+  } catch (error) {
+    console.error("تعذر إنشاء معاينة الكارنيه.", error);
+    showToast(error instanceof Error ? error.message : "تعذر فتح الكارنيه.");
+  }
+}
+
+function coachPlayerCardsView() {
+  const players = cardPlayers();
+  const rows = players.map(player => `<tr><td>${escapeHtml(player.name)}</td><td dir="ltr">${escapeHtml(player.playerCode)}</td><td>${genderLabel(player.gender)}</td><td><div class="player-card-row-actions"><button class="small-action" data-action="player-card-preview" data-player="${escapeHtml(player.id)}">فتح الكارنيه</button><button class="small-action" data-action="download-player-card" data-player="${escapeHtml(player.id)}">تحميل</button></div></td></tr>`).join("");
+  return `<section class="page-intro"><div><p class="eyebrow">هوية لاعبي الأكاديمية</p><h1>كارنيهات اللاعبين</h1><p class="welcome-subtitle">قوالب تلقائية حسب النوع، بوجهين جاهزين للطباعة وبلا صورة شخصية.</p></div></section>
+    <section class="panel player-card-tools"><div class="player-card-count"><label for="player-card-count">عدد اللاعبين للتنزيل</label><input id="player-card-count" type="number" min="1" max="${players.length}" value="${players.length}" ${players.length ? "" : "disabled"}></div><div class="player-card-batch-actions"><button class="secondary-button" data-action="download-card-count" ${players.length ? "" : "disabled"}>تحميل العدد المحدد</button><button class="primary-button" data-action="download-all-cards" ${players.length ? "" : "disabled"}>تحميل الكل · ${arabicDigits(players.length)}</button></div><p class="form-note">يتضمن الملف صور PNG بدقة عالية، مرتبة أمام ثم خلف لكل لاعب بالترتيب الأبجدي.</p></section>
+    <section class="panel player-cards-table"><div class="panel-heading"><div><h2>سجل الكارنيهات</h2><p>${arabicDigits(players.length)} لاعب مسجل</p></div></div>${players.length ? `<div class="table-wrap"><table><thead><tr><th>اسم اللاعب / اللاعبة</th><th>الكود</th><th>النوع</th><th>الإجراء</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty-state"><p>لا يوجد لاعبون مسجلون بعد.</p></div>'}</section>`;
 }
 
 function sessionGenderLabel(session) {
@@ -1286,7 +1394,7 @@ function renderView() {
       ? labels[button.dataset.view]
       : button.dataset.defaultLabel;
   });
-  const titles = { home: "الرئيسية", legacyPlayers: "ملفات اللاعبين الحاليين", playerCodes: "أكواد اللاعبين", schedule: "جدول التدريبات", attendance: "الحضور", subscription: isCoach ? "اشتراكات اللاعبين" : "اشتراكي", guardianReport: "تقرير ولي الأمر الشامل", payments: "المدفوعات", settings: "أيام العمل والأسعار", trainers: "إدارة المدربين", trainerAttendance: "حضور المدربين", finances: "الإيرادات والمصروفات" };
+  const titles = { home: "الرئيسية", legacyPlayers: "ملفات اللاعبين الحاليين", playerCodes: "أكواد اللاعبين", schedule: "جدول التدريبات", attendance: "الحضور", subscription: isCoach ? "اشتراكات اللاعبين" : "اشتراكي", guardianReport: "تقرير ولي الأمر الشامل", payments: "المدفوعات", settings: "أيام العمل والأسعار", trainers: "إدارة المدربين", trainerAttendance: "حضور المدربين", cards: "كارنيهات اللاعبين", finances: "الإيرادات والمصروفات" };
   if ((isTrainer && !["home", "schedule", "attendance"].includes(activeView)) || (["member", "guardian"].includes(currentUser?.role) && !["home", "schedule", "attendance", "subscription", "payments"].includes(activeView))) activeView = "home";
   byId("view-title").textContent = isCoach && activeView === "home" ? "إدارة الأكاديمية" : isTrainer && activeView === "home" ? "مساحة المدرب" : isTrainer && activeView === "attendance" ? "تسجيل حضور لاعب" : isMemberSpace && activeView === "schedule" ? "المواعيد والحضور" : isMemberSpace && activeView === "subscription" ? "الاشتراكات والتدريب" : titles[activeView];
   byId("portal-back").disabled = viewHistory.length === 0;
@@ -1307,7 +1415,7 @@ function renderView() {
     notificationButton.hidden = !showAnnouncementsButton;
   }
   if (isCoach) {
-    content.innerHTML = activeView === "legacyPlayers" ? coachLegacyPlayersView() : activeView === "playerCodes" ? coachPlayerCodesView() : activeView === "schedule" ? coachScheduleView() : activeView === "attendance" ? coachAttendanceView() : activeView === "subscription" ? coachPlayersView() : activeView === "guardianReport" ? coachGuardianReportView() : activeView === "payments" ? coachPaymentsView() : activeView === "settings" ? coachSettingsView() : activeView === "trainers" ? coachTrainersView() : activeView === "trainerAttendance" ? supervisorTrainerAttendanceView() : activeView === "finances" ? financeView() : coachHomeView();
+    content.innerHTML = activeView === "legacyPlayers" ? coachLegacyPlayersView() : activeView === "playerCodes" ? coachPlayerCodesView() : activeView === "schedule" ? coachScheduleView() : activeView === "attendance" ? coachAttendanceView() : activeView === "subscription" ? coachPlayersView() : activeView === "guardianReport" ? coachGuardianReportView() : activeView === "payments" ? coachPaymentsView() : activeView === "settings" ? coachSettingsView() : activeView === "trainers" ? coachTrainersView() : activeView === "trainerAttendance" ? supervisorTrainerAttendanceView() : activeView === "cards" ? coachPlayerCardsView() : activeView === "finances" ? financeView() : coachHomeView();
   } else if (isTrainer) {
     content.innerHTML = activeView === "schedule" ? trainerScheduleView() : activeView === "attendance" ? trainerAttendanceView() : trainerHomeView();
   } else {
@@ -1361,7 +1469,6 @@ function memberHomeView() {
   const noticeTitle = notices[0] || "خصم تدريباتك مرتبط بباقة اشتراكك";
   const noticeMessage = notices[1] || `سعر التدريب الواحد ${arabicDigits(planInfo.sessionPrice)} ج.م حسب الأيام التي اخترتها.`;
   const endDateLabel = user.subscriptionEnd ? egyptianDate.format(new Date(`${user.subscriptionEnd}T12:00:00`)) : "لم يتم تفعيل الاشتراك";
-  const notificationPanel = notificationPanelForCurrentUser();
   const parentName = currentUser.role === "guardian" ? currentUser.name : user.name;
   const attendanceCount = user.legacyAttendanceAuto
     ? balance.used
@@ -1382,7 +1489,7 @@ function memberHomeView() {
   const categoryNotice = pendingCategory
     ? `<div class="inline-notice">بلغ اللاعب السن المؤهل للانتقال إلى فئة ${escapeHtml(pendingCategory)}. تظل فئته الحالية حتى اعتماد المشرف.</div>`
     : "";
-  return `<section class="portal-welcome"><div><p class="eyebrow"><span class="live-dot"></span>${egyptianDate.format(new Date())}</p><h1>أهلًا بك يا ${escapeHtml(parentName)} <span class="wave">✦</span></h1><p class="welcome-subtitle">متابعة اللاعب: <strong>${escapeHtml(user.name)}</strong></p>${playerCodeContact}</div><div class="welcome-actions"><div class="welcome-notification-slot"></div><span class="welcome-ball">🏀</span></div></section>${playerQrCard}${notificationPanel}${categoryNotice}
+  return `<section class="portal-welcome"><div><p class="eyebrow"><span class="live-dot"></span>${egyptianDate.format(new Date())}</p><h1>أهلًا بك يا ${escapeHtml(parentName)} <span class="wave">✦</span></h1><p class="welcome-subtitle">متابعة اللاعب: <strong>${escapeHtml(user.name)}</strong></p>${playerCodeContact}</div><div class="welcome-actions"><span class="welcome-ball">🏀</span></div></section>${playerQrCard}${categoryNotice}
     <section class="member-stats">
       <article class="member-stat"><span class="member-stat-icon green-icon">◷</span><p>الموعد القادم</p><strong>${nextSession ? `${escapeHtml(weekdayForDate(localDateString(nextSession.date)))} · ${escapeHtml(egyptianDate.format(nextSession.date))}` : "لا يوجد تدريب"}</strong><small>${escapeHtml(nextSession ? `${sessionTimeRange(nextSession.session)} · ${nextSession.session.title}` : "تظهر المواعيد بعد إضافتها من الأكاديمية")}</small></article>
       <article class="member-stat"><span class="member-stat-icon blue-icon">✓</span><p>التمارين المتبقية</p><strong>${arabicDigits(Math.max(0, sessionsLeft))} تمرين</strong><small>${user.legacyAttendanceAuto ? "حضور محسوب" : "حضر"} ${arabicDigits(attendanceCount)} من ${arabicDigits(balance.allowance)} تمارين</small></article>
@@ -1391,49 +1498,6 @@ function memberHomeView() {
     <nav class="member-quick-actions" aria-label="إجراءات سريعة"><button type="button" data-view="subscription">🟢 تغيير أيام التدريب</button><button type="button" data-view="payments">💳 تجديد الاشتراك</button><a href="https://wa.me/201017692213?text=${actionMessage}" target="_blank" rel="noopener noreferrer">📲 التواصل عبر واتساب</a></nav>
     <section class="member-summary-grid"><article class="panel"><h2>اشتراك ${escapeHtml(planInfo.plan.name)}</h2><p class="welcome-subtitle">ينتهي في: <strong>${endDateLabel}</strong></p><p>أيام التدريب: <strong>${escapeHtml(user.weeklyDays.join("، ") || "لم تحدد بعد")}</strong></p><button class="text-link" data-view="subscription">تفاصيل الاشتراك والتدريب ←</button></article><article class="panel"><h2>الموعد القادم</h2>${nextSession ? `<p class="member-next-summary"><strong>${escapeHtml(readableSessionTitle(nextSession.session.title))}</strong><span>${escapeHtml(weekdayForDate(localDateString(nextSession.date)))} ${escapeHtml(egyptianDate.format(nextSession.date))}</span><span>${escapeHtml(sessionTimeRange(nextSession.session))} · ${escapeHtml(nextSession.session.place)}</span></p>` : '<p>لا توجد تدريبات قادمة مجدولة.</p>'}<button class="text-link" data-view="schedule">المواعيد والحضور ←</button></article></section>
     <section class="panel upcoming-panel"><div class="panel-heading"><div><h2>تنبيهات تهمك</h2><p>ابقَ على اطلاع بحسابك وتدريباتك</p></div></div>${notices.length ? notices.map((notice, index) => `<div class="notice-item"><span class="notice-icon ${index ? "status-soon" : state.className}">!</span><span><strong>${escapeHtml(notice)}</strong><small>${index === 0 ? escapeHtml(noticeMessage) : "تابع صفحة الحضور والمدفوعات لمزيد من التفاصيل."}</small></span></div>`).join("") : `<div class="notice-item"><span class="notice-icon ${state.className}">!</span><span><strong>${escapeHtml(noticeTitle)}</strong><small>${escapeHtml(noticeMessage)}</small></span></div>`}</section>${supervisorUpdates}`;
-}
-
-function notificationPanelForCurrentUser() {
-  if (!currentUser || !["guardian", "member", "coach", "trainer"].includes(currentUser.role)
-    || hasNotificationSubscription(currentUser)) return "";
-  const accountDescription = ["guardian", "member"].includes(currentUser.role)
-    ? "استقبل تنبيهات الحضور والغياب والدفع الخاصة بحسابك، والإعلانات الجديدة."
-    : "استقبل الإعلانات والتنبيهات العامة الجديدة من الأكاديمية.";
-  const description = !supportsPushNotificationsOnThisOrigin()
-    ? "الإشعارات تحتاج فتح الأكاديمية من رابط HTTPS؛ لا تعمل عند فتح ملف الموقع مباشرة."
-    : "Notification" in window && Notification.permission === "denied"
-      ? "إذن الإشعارات مرفوض من المتصفح. غيّره إلى السماح من إعدادات الموقع ثم أعد تحميل الصفحة."
-      : accountDescription;
-  return `<section class="panel push-notification-panel"><div><strong>إشعارات الأكاديمية</strong><p>${description}</p></div><button class="small-action" data-action="toggle-guardian-notifications">🔔 ${hasAcceptedNotifications(currentUser) ? "إعادة محاولة تفعيل الإشعارات" : "تفعيل الإشعارات"}</button></section>`;
-}
-
-async function toggleUserNotifications() {
-  if (!["guardian", "member", "coach", "trainer"].includes(currentUser?.role)) { showToast("إشعارات الهاتف متاحة للحسابات المسجلة في الأكاديمية فقط."); return; }
-  try {
-    if (!supportsPushNotificationsOnThisOrigin()) {
-      throw new Error("إشعارات الهاتف تحتاج فتح الأكاديمية من رابط HTTPS، وليس من ملف على الجهاز.");
-    }
-    if (!("serviceWorker" in navigator)) throw new Error("هذا المتصفح لا يدعم تشغيل خدمة إشعارات الأكاديمية.");
-    if (!("Notification" in window)) throw new Error("هذا المتصفح لا يدعم إشعارات الهاتف.");
-    if (Notification.permission === "denied") {
-      throw new Error("إذن الإشعارات مرفوض. افتح إعدادات الموقع في المتصفح، وغيّر الإشعارات إلى سماح، ثم أعد تحميل الصفحة.");
-    }
-    const permission = Notification.permission === "default"
-      ? await Notification.requestPermission()
-      : Notification.permission;
-    if (permission !== "granted") throw new Error("لم يتم السماح بالإشعارات. فعّلها من إعدادات المتصفح ثم حاول مرة أخرى.");
-    const firebase = await window.firebaseReady;
-    await firebase.subscribeUserToNotifications(currentUser);
-    localStorage.setItem(notificationConsentStorageKey(currentUser.id), "accepted");
-    localStorage.setItem(notificationSubscriptionStorageKey(currentUser.id), "enabled");
-    renderView();
-    showToast("تم تفعيل إشعارات الحضور والغياب والدفع والإعلانات على هذا الهاتف.");
-  } catch (error) {
-    localStorage.removeItem(notificationSubscriptionStorageKey(currentUser.id));
-    console.error("تعذر تفعيل إشعارات ولي الأمر.", error);
-    showToast(error instanceof Error ? error.message : "تعذر إعداد الإشعارات. حاول مرة أخرى.");
-    renderView();
-  }
 }
 
 function announcementTime(announcement) {
@@ -1821,7 +1885,7 @@ function coachHomeView() {
   const pending = data.payments.filter(payment => payment.status === "بانتظار المراجعة");
   const today = localDateString();
   const presentToday = data.attendance.filter(item => item.isoDate === today && item.status !== "غائب" && item.dayOff !== true).length;
-  return `${notificationPanelForCurrentUser()}<section class="portal-welcome"><div><p class="eyebrow"><span class="live-dot"></span>${egyptianDate.format(new Date())}</p><h1>أهلًا ${OWNER_NAME} <span class="wave">✦</span></h1><p class="welcome-subtitle">إدارة الأكاديمية، المدربين، حضور اللاعبين والحسابات المالية.</p></div><div class="welcome-actions"><div class="welcome-notification-slot"></div><button class="primary-button" data-action="new-session"><span>＋</span> إضافة تدريب</button></div></section>
+  return `<section class="portal-welcome"><div><p class="eyebrow"><span class="live-dot"></span>${egyptianDate.format(new Date())}</p><h1>أهلًا ${OWNER_NAME} <span class="wave">✦</span></h1><p class="welcome-subtitle">إدارة الأكاديمية، المدربين، حضور اللاعبين والحسابات المالية.</p></div><div class="welcome-actions"><button class="primary-button" data-action="new-session"><span>＋</span> إضافة تدريب</button></div></section>
     <section class="member-stats coach-stats"><article class="member-stat"><span class="member-stat-icon green-icon">♙</span><p>اللاعبون المسجلون</p><strong>${arabicDigits(activeUsers.length)} لاعب</strong><small>في قاعدة بيانات هذا الجهاز</small></article><article class="member-stat"><span class="member-stat-icon blue-icon">✓</span><p>الحضور اليوم</p><strong>${arabicDigits(presentToday)} لاعب</strong><small>مسجل بواسطة المشرف</small></article><article class="member-stat"><span class="member-stat-icon amber-icon">!</span><p>اشتراكات للتجديد</p><strong>${arabicDigits(expiring.length)} اشتراك</strong><small>خلال الأيام السبعة القادمة</small></article><article class="member-stat"><span class="member-stat-icon purple-icon">⇄</span><p>تحويلات للمراجعة</p><strong>${arabicDigits(pending.length)} طلب</strong><small>بانتظار تأكيد المشرف</small></article></section>
     <section class="portal-grid"><article class="panel"><div class="panel-heading"><div><h2>تدريبات الأكاديمية</h2><p>أيام العمل: ${escapeHtml(data.workDays.join("، ") || "لم تحدد بعد")}</p></div><button class="text-link" data-view="schedule">إدارة الجدول <span>←</span></button></div>${sessionCards(trainingGroups().slice(0, 3).flatMap(group => group.sessions), true)}</article><article class="panel"><div class="panel-heading"><div><h2>تنبيهات المتابعة</h2><p>اشتراكات ومدفوعات تحتاج إلى مراجعة</p></div></div><div class="coach-alerts"><button data-view="subscription"><span class="alert-badge amber-icon">!</span><span><strong>${arabicDigits(expiring.length)} اشتراك قريب الانتهاء</strong><small>راجع الاشتراكات وأبلغ أولياء الأمور.</small></span></button><button data-view="payments"><span class="alert-badge purple-icon">⇄</span><span><strong>${arabicDigits(pending.length)} دفعة بنكية أو إلكترونية</strong><small>تحقق من المراجع والإيصالات قبل تأكيد الدفع.</small></span></button><button data-view="settings"><span class="alert-badge green-icon">⚙</span><span><strong>تعديل أيام العمل والأسعار</strong><small>حدد مواعيد الأكاديمية وقيمة كل باقة.</small></span></button></div></article></section>`;
 }
@@ -1843,7 +1907,7 @@ function trainerHomeView() {
   const sessions = data.sessions.filter(session => session.coachId === currentUser.id);
   const players = data.users.filter(user => user.role === "member" && sessions.some(session => sessionIncludesMember(session, user)));
   const present = data.attendance.filter(record => record.isoDate === localDateString() && record.status === "حاضر" && players.some(player => player.id === record.playerId)).length;
-  return `${notificationPanelForCurrentUser()}<section class="portal-welcome"><div><p class="eyebrow">فريق التدريب</p><h1>أهلًا كابتن ${escapeHtml(currentUser.name)}</h1><p class="welcome-subtitle">تابع مجموعاتك وسجّل حضور اللاعبين بسهولة.</p></div></section><section class="member-stats assistant-stats"><article class="member-stat"><span class="member-stat-icon green-icon">🏀</span><p>حصصي</p><strong>${arabicDigits(sessions.length)} حصة</strong></article><article class="member-stat"><span class="member-stat-icon blue-icon">♙</span><p>لاعبو مجموعاتي</p><strong>${arabicDigits(players.length)} لاعب</strong></article><article class="member-stat"><span class="member-stat-icon amber-icon">✓</span><p>حضور اليوم</p><strong>${arabicDigits(present)} لاعب</strong></article></section><section class="assistant-quick-panel panel"><div><h2>جاهز لتسجيل الحضور؟</h2><p>ابحث باسم اللاعب، ثم اختر مجموعته وسجّل وقت وصوله.</p></div><button type="button" class="primary-button" data-view="attendance">تسجيل حضور لاعب</button></section><section class="panel schedule-panel"><div class="panel-heading"><div><h2>حصصي التدريبية</h2><p>${arabicDigits(sessions.length)} حصص مسندة إليك</p></div></div>${sessionCards(sessions)}</section>`;
+  return `<section class="portal-welcome"><div><p class="eyebrow">فريق التدريب</p><h1>أهلًا كابتن ${escapeHtml(currentUser.name)}</h1><p class="welcome-subtitle">تابع مجموعاتك وسجّل حضور اللاعبين بسهولة.</p></div></section><section class="member-stats assistant-stats"><article class="member-stat"><span class="member-stat-icon green-icon">🏀</span><p>حصصي</p><strong>${arabicDigits(sessions.length)} حصة</strong></article><article class="member-stat"><span class="member-stat-icon blue-icon">♙</span><p>لاعبو مجموعاتي</p><strong>${arabicDigits(players.length)} لاعب</strong></article><article class="member-stat"><span class="member-stat-icon amber-icon">✓</span><p>حضور اليوم</p><strong>${arabicDigits(present)} لاعب</strong></article></section><section class="assistant-quick-panel panel"><div><h2>جاهز لتسجيل الحضور؟</h2><p>ابحث باسم اللاعب، ثم اختر مجموعته وسجّل وقت وصوله.</p></div><button type="button" class="primary-button" data-view="attendance">تسجيل حضور لاعب</button></section><section class="panel schedule-panel"><div class="panel-heading"><div><h2>حصصي التدريبية</h2><p>${arabicDigits(sessions.length)} حصص مسندة إليك</p></div></div>${sessionCards(sessions)}</section>`;
 }
 
 function trainerScheduleView() {
@@ -1884,17 +1948,13 @@ function openPlayerFormFor(player = null) {
 }
 
 function openPlayerCodeLogin() {
-  openModal("دخول اللاعب بكود الحضور", `<label>كود اللاعب الرقمي<input name="playerCode" inputmode="numeric" pattern="[0-9٠-٩۰-۹]{6}" minlength="6" maxlength="6" required placeholder="أدخل الكود المكوّن من ٦ أرقام"></label><fieldset class="notification-consent"><legend>🔔 إشعارات الأكاديمية <span>الاختيار مطلوب</span></legend><label><input type="radio" name="notificationConsent" value="accept" required> أوافق على استلام إشعارات الأكاديمية</label><label><input type="radio" name="notificationConsent" value="decline" required> لا أوافق الآن، ويمكنني الموافقة لاحقًا</label></fieldset><p class="modal-explainer">كود اللاعب ثابت، ويستخدم للدخول إلى حساب اللاعب ولتسجيل الحضور بواسطة المشرف.</p>`, "دخول اللاعب", async form => {
+  openModal("دخول اللاعب بكود الحضور", `<label>كود اللاعب الرقمي<input name="playerCode" inputmode="numeric" pattern="[0-9٠-٩۰-۹]{6}" minlength="6" maxlength="6" required placeholder="أدخل الكود المكوّن من ٦ أرقام"></label><p class="modal-explainer">كود اللاعب ثابت، ويستخدم للدخول إلى حساب اللاعب ولتسجيل الحضور بواسطة المشرف.</p>`, "دخول اللاعب", async form => {
     const code = normalizeDigits(String(form.get("playerCode")).trim());
     if (!/^\d{6}$/.test(code)) throw new Error("أدخل كود اللاعب المكوّن من ٦ أرقام.");
-    const consent = String(form.get("notificationConsent") || "");
-    if (!["accept", "decline"].includes(consent)) throw new Error("اختر الموافقة على إشعارات الأكاديمية أو رفضها قبل تسجيل الدخول.");
-    const notificationPermission = await requestNotificationPermission(consent);
     const firebase = await window.firebaseReady;
     authFlowInProgress = true;
     try {
       const player = await firebase.signInWithPlayerCode(code);
-      saveNotificationConsent(player.id, consent, notificationPermission);
       await activateCloudProfile(player);
       closeModal();
     } finally {
@@ -5078,23 +5138,16 @@ function recordCashDebtPayment(playerId) {
 byId("login-form").addEventListener("submit", async event => {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  const consent = String(form.get("notificationConsent") || "");
-  if (!["accept", "decline"].includes(consent)) {
-    showToast("اختر الموافقة على إشعارات الأكاديمية أو رفضها قبل تسجيل الدخول.");
-    return;
-  }
   const submitButton = event.currentTarget.querySelector('button[type="submit"]');
   submitButton.disabled = true;
   authFlowInProgress = true;
   try {
-    const notificationPermission = await requestNotificationPermission(consent);
     const firebase = await window.firebaseReady;
     const profile = await firebase.signIn(String(form.get("email")), String(form.get("password")));
     if (profile.role !== "guardian") {
       await firebase.signOut();
       throw new Error("المدرب يستخدم مدخل الاسم وكلمة المرور المخصص له، والمشرف يستخدم مدخله الخاص.");
     }
-    saveNotificationConsent(profile.id, consent, notificationPermission);
     await activateCloudProfile(profile);
   } catch (error) {
     console.error("تعذر تسجيل الدخول.", error);
@@ -5110,11 +5163,6 @@ byId("register-form").addEventListener("submit", event => {
   const registerForm = event.currentTarget;
   const form = new FormData(registerForm);
   const email = String(form.get("email")).trim().toLowerCase();
-  const consent = String(form.get("notificationConsent") || "");
-  if (!["accept", "decline"].includes(consent)) {
-    showToast("اختر الموافقة على إشعارات الأكاديمية أو رفضها قبل إنشاء الحساب.");
-    return;
-  }
   const guardianPhone = normalizeDigits(String(form.get("guardianPhone"))).replace(/\s/g, "");
   const whatsappPhone = normalizeDigits(String(form.get("whatsappPhone"))).replace(/\s/g, "");
   if (!/^01\d{9}$/.test(guardianPhone)) { showToast("أدخل رقم هاتف مصري صحيحًا مكوّنًا من ١١ رقمًا."); return; }
@@ -5177,10 +5225,8 @@ byId("register-form").addEventListener("submit", event => {
   authFlowInProgress = true;
   (async () => {
     try {
-      const notificationPermission = await requestNotificationPermission(consent);
       const firebase = await window.firebaseReady;
       const registration = await firebase.registerGuardian(user, players);
-      saveNotificationConsent(registration.profile.id, consent, notificationPermission);
       registerForm.reset();
       byId("child-name-list").innerHTML = '<div class="child-name-row"><label>اسم اللاعب<input name="childName" required minlength="2" maxlength="80" placeholder="اسم اللاعب بالكامل"></label><label>النوع<select name="childGender" required><option value="">اختر النوع</option><option value="male">ذكر</option><option value="female">أنثى</option></select></label><fieldset class="child-birth-date"><legend>تاريخ ميلاد اللاعب</legend><div class="child-birth-date-fields"><label>اليوم<input name="childBirthDay" type="text" inputmode="numeric" pattern="[0-9٠-٩۰-۹]{1,2}" maxlength="2" required placeholder="يوم"></label><label>الشهر<input name="childBirthMonth" type="text" inputmode="numeric" pattern="[0-9٠-٩۰-۹]{1,2}" maxlength="2" required placeholder="شهر"></label><label>السنة<input name="childBirthYear" type="text" inputmode="numeric" pattern="[0-9٠-٩۰-۹]{4}" maxlength="4" required placeholder="سنة"></label></div></fieldset></div></div>';
       await activateCloudProfile(registration.profile);
@@ -5258,7 +5304,7 @@ document.addEventListener("click", async event => {
   const viewButton = target.closest("[data-view]");
   if (viewButton) {
     const allowedViews = currentUser.role === "coach"
-      ? ["home", "legacyPlayers", "playerCodes", "schedule", "attendance", "subscription", "guardianReport", "payments", "settings", "trainers", "trainerAttendance", "finances"]
+      ? ["home", "legacyPlayers", "playerCodes", "schedule", "attendance", "subscription", "guardianReport", "payments", "settings", "trainers", "trainerAttendance", "cards", "finances"]
       : currentUser.role === "trainer" ? ["home", "schedule", "attendance"] : ["home", "schedule", "attendance", "subscription", "payments"];
     if (!allowedViews.includes(viewButton.dataset.view)) { showToast("هذه الصفحة غير متاحة لحسابك."); return; }
     if (viewButton.dataset.view !== activeView) viewHistory.push(activeView);
@@ -5384,7 +5430,6 @@ document.addEventListener("click", async event => {
     if (!navigator.clipboard?.writeText) { showToast(`رقم التحويل: ${value}`); return; }
     navigator.clipboard.writeText(value).then(() => showToast("تم نسخ الرقم.")).catch(error => { console.error("تعذر نسخ الرقم.", error); showToast(`رقم التحويل: ${value}`); });
   }
-  if (action.dataset.action === "toggle-guardian-notifications") toggleUserNotifications();
   if (action.dataset.action === "mark-announcement-read") markAnnouncementRead([action.dataset.announcement]);
   if (action.dataset.action === "mark-all-announcements-read") {
     const currentGuardianId = currentUser.role === "member" ? currentUser.guardianId : currentUser.id;

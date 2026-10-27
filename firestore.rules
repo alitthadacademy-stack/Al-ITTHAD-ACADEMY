@@ -152,6 +152,70 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/players/$(playerCode)).data.name == playerName;
     }
 
+    function validMemberPaymentQuote() {
+      let playerCode = request.resource.data.playerCode;
+      let player = get(/databases/$(database)/documents/players/$(playerCode)).data;
+      let planId = request.resource.data.planId;
+      let monthlyPrice = academyMonthlyPrice(planId);
+      let credit = player.get('walletBalance', 0) > 0 ? player.get('walletBalance', 0) : 0;
+      let reservedCredit = request.resource.data.walletCreditReserved;
+      let subscriptionPrice = request.resource.data.subscriptionDuration == 'half'
+        ? monthlyPrice / 2 : monthlyPrice;
+      let expectedAmount = subscriptionPrice > reservedCredit ? subscriptionPrice - reservedCredit : 0;
+      return playerCode == get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode
+        && request.resource.data.playerId == player.id
+        && request.resource.data.guardianId == player.guardianId
+        && request.resource.data.playerName == player.name
+        && planId == player.weeklyDaysCount
+        && reservedCredit is int
+        && reservedCredit <= credit
+        && credit - reservedCredit < 1
+        && request.resource.data.siblingDiscount == 0
+        && request.resource.data.amount == expectedAmount;
+    }
+
+    function academyMonthlyPrice(planId) {
+      let settingsPath = /databases/$(database)/documents/settings/academy;
+      let settings = get(settingsPath);
+      let prices = exists(settingsPath) ? settings.data.get('pricesByDays', {}) : {};
+      return planId == 1 ? prices.get('1', 400)
+        : planId == 2 ? prices.get('2', 760)
+        : planId == 3 ? prices.get('3', 1020)
+        : planId == 4 ? prices.get('4', 1200)
+        : planId == 5 ? prices.get('5', 1400)
+        : planId == 6 ? prices.get('6', 1600)
+        : prices.get('7', 1800);
+    }
+
+    function validGuardianPaymentQuote() {
+      let playerCode = request.resource.data.playerCode;
+      let player = get(/databases/$(database)/documents/players/$(playerCode)).data;
+      let planId = request.resource.data.planId;
+      let monthlyPrice = academyMonthlyPrice(planId);
+      let credit = player.get('walletBalance', 0) > 0 ? player.get('walletBalance', 0) : 0;
+      let reservedCredit = request.resource.data.walletCreditReserved;
+      let discount = request.resource.data.get('siblingDiscount', 0);
+      let subscriptionPrice = request.resource.data.subscriptionDuration == 'half'
+        ? monthlyPrice / 2 : monthlyPrice;
+      let amountBeforeDiscount = subscriptionPrice > reservedCredit ? subscriptionPrice - reservedCredit : 0;
+      let expectedAmount = amountBeforeDiscount > discount ? amountBeforeDiscount - discount : 0;
+      return playerCode is string
+        && playerCode.matches('^\\d{6}$')
+        && player.id == request.resource.data.playerId
+        && player.guardianId == request.auth.uid
+        && player.name == request.resource.data.playerName
+        && planId == player.weeklyDaysCount
+        && reservedCredit is int
+        && reservedCredit <= credit
+        && credit - reservedCredit < 1
+        && discount is number
+        && discount >= 0
+        && discount <= 50
+        && (request.resource.data.subscriptionDuration == 'full' || discount == 0)
+        && discount <= amountBeforeDiscount
+        && request.resource.data.amount == expectedAmount;
+    }
+
     function trainerOwnsSession(sessionId) {
       return exists(/databases/$(database)/documents/sessions/$(sessionId))
         && get(/databases/$(database)/documents/sessions/$(sessionId)).data.coachId == request.auth.uid;
@@ -233,7 +297,7 @@ service cloud.firestore {
       allow list: if isCoach()
         || trainerAssignedToPlayer(playerCode)
         || (isGuardian() && resource.data.guardianId == request.auth.uid);
-      allow create: if guardianProfileAfterRegistration()
+      allow create: if (guardianProfileAfterRegistration() || isGuardian())
         && validGuardianPlayerCreate(playerCode)
         && existsAfter(/databases/$(database)/documents/playerCodes/$(playerCode))
         && getAfter(/databases/$(database)/documents/playerCodes/$(playerCode)).data.playerId == request.resource.data.id
@@ -297,7 +361,7 @@ service cloud.firestore {
             && get(/databases/$(database)/documents/players/$(code)).data.guardianId == request.auth.uid)
           || isAnonymousUser());
       allow list: if isCoach();
-      allow create: if guardianProfileAfterRegistration()
+      allow create: if (guardianProfileAfterRegistration() || isGuardian())
         && request.resource.data.keys().hasAll(['playerId', 'playerCode'])
         && request.resource.data.keys().hasOnly(['playerId', 'playerCode'])
         && request.resource.data.playerCode == code
@@ -320,10 +384,10 @@ service cloud.firestore {
       allow read: if isCoach()
         || (isGuardian() && resource.data.guardianId == request.auth.uid)
         || (isMember() && resource.data.playerId == memberPlayerId());
-      allow create: if (isGuardian()
+        allow create: if ((isGuardian() || isMember())
           && request.resource.data.keys().hasAll([
             'id', 'guardianId', 'playerId', 'playerName', 'planId', 'planName',
-            'subscriptionDuration', 'paymentGroupId', 'amount', 'walletCreditReserved',
+            'subscriptionDuration', 'amount', 'walletCreditReserved',
             'playerCode', 'expectedStartDate', 'reference', 'method', 'methodLabel', 'status',
             'createdAt', 'date', 'updatedAt'
           ])
@@ -334,12 +398,17 @@ service cloud.firestore {
             'methodLabel', 'status', 'createdAt', 'date', 'updatedAt'
           ])
           && request.resource.data.id == paymentId
-          && request.resource.data.guardianId == request.auth.uid
+          && ((isGuardian()
+              && request.resource.data.guardianId == request.auth.uid
+              && guardianOwnsPlayer(request.resource.data.playerId, request.resource.data.playerCode, request.resource.data.playerName)
+              && validGuardianPaymentQuote())
+            || (isMember()
+              && request.resource.data.playerId == memberPlayerId()
+              && validMemberPaymentQuote()))
           && request.resource.data.status == 'بانتظار المراجعة'
           && request.resource.data.playerId is string
           && request.resource.data.playerId.size() >= 1
           && request.resource.data.playerId.size() <= 128
-          && guardianOwnsPlayer(request.resource.data.playerId, request.resource.data.playerCode, request.resource.data.playerName)
           && request.resource.data.playerName is string
           && request.resource.data.playerName.size() >= 2
           && request.resource.data.playerName.size() <= 80
@@ -350,9 +419,10 @@ service cloud.firestore {
           && request.resource.data.planName.size() >= 1
           && request.resource.data.planName.size() <= 80
           && request.resource.data.subscriptionDuration in ['full', 'half']
-          && request.resource.data.paymentGroupId is string
-          && request.resource.data.paymentGroupId.size() >= 16
-          && request.resource.data.paymentGroupId.size() <= 80
+          && (!request.resource.data.keys().hasAny(['paymentGroupId'])
+            || (request.resource.data.paymentGroupId is string
+              && request.resource.data.paymentGroupId.size() >= 16
+              && request.resource.data.paymentGroupId.size() <= 80))
           && request.resource.data.amount is number
           && request.resource.data.amount >= 0
           && request.resource.data.amount <= 1000000
@@ -404,7 +474,43 @@ service cloud.firestore {
     }
 
     match /playerPaymentLocks/{playerId} {
-      allow read, write: if isCoach();
+      allow get: if isCoach()
+        || (isGuardian()
+          && (!exists(/databases/$(database)/documents/playerPaymentLocks/$(playerId))
+            || (resource.data.paymentId is string
+              && exists(/databases/$(database)/documents/payments/$(resource.data.paymentId))
+              && get(/databases/$(database)/documents/payments/$(resource.data.paymentId)).data.guardianId == request.auth.uid)))
+        || (isMember()
+          && (!exists(/databases/$(database)/documents/playerPaymentLocks/$(playerId))
+            || (resource.data.paymentId is string
+              && exists(/databases/$(database)/documents/payments/$(resource.data.paymentId))
+              && get(/databases/$(database)/documents/payments/$(resource.data.paymentId)).data.playerId == memberPlayerId())));
+      allow list: if false;
+      allow create: if (isGuardian() || isMember())
+        && request.resource.data.keys().hasAll([
+          'playerId', 'playerCode', 'guardianId', 'paymentId', 'ownerUid', 'createdAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'playerId', 'playerCode', 'guardianId', 'paymentId', 'ownerUid', 'createdAt'
+        ])
+        && request.resource.data.playerId == playerId
+        && request.resource.data.playerId is string
+        && request.resource.data.playerCode is string
+        && request.resource.data.playerCode.matches('^\\d{6}$')
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.createdAt is timestamp
+        && exists(/databases/$(database)/documents/players/$(request.resource.data.playerCode))
+        && get(/databases/$(database)/documents/players/$(request.resource.data.playerCode)).data.id == playerId
+        && get(/databases/$(database)/documents/players/$(request.resource.data.playerCode)).data.guardianId == request.resource.data.guardianId
+        && ((isGuardian() && request.resource.data.guardianId == request.auth.uid)
+          || (isMember() && request.resource.data.playerId == memberPlayerId()
+            && request.resource.data.playerCode == get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode))
+        && existsAfter(/databases/$(database)/documents/payments/$(request.resource.data.paymentId))
+        && getAfter(/databases/$(database)/documents/payments/$(request.resource.data.paymentId)).data.playerId == playerId
+        && getAfter(/databases/$(database)/documents/payments/$(request.resource.data.paymentId)).data.guardianId == request.resource.data.guardianId
+        && getAfter(/databases/$(database)/documents/payments/$(request.resource.data.paymentId)).data.status == 'بانتظار المراجعة';
+      allow update: if false;
+      allow delete: if isCoach();
     }
 
     match /subscriptions/{subscriptionId} {
@@ -412,12 +518,17 @@ service cloud.firestore {
         || (isGuardian()
           && exists(/databases/$(database)/documents/players/$(resource.data.playerCode))
           && get(/databases/$(database)/documents/players/$(resource.data.playerCode)).data.guardianId == request.auth.uid
-          && get(/databases/$(database)/documents/players/$(resource.data.playerCode)).data.id == resource.data.playerId);
-      allow create: if isGuardian()
+          && get(/databases/$(database)/documents/players/$(resource.data.playerCode)).data.id == resource.data.playerId)
+        || (isMember() && resource.data.playerId == memberPlayerId());
+      allow create: if (isGuardian() || isMember())
         && request.resource.data.keys().hasAll(['playerId', 'playerCode', 'playerName', 'expectedStartDate', 'transferCode', 'createdAt'])
         && request.resource.data.keys().hasOnly(['playerId', 'playerCode', 'playerName', 'expectedStartDate', 'transferCode', 'createdAt'])
-        && request.resource.data.playerId == get(/databases/$(database)/documents/players/$(request.resource.data.playerCode)).data.id
-        && get(/databases/$(database)/documents/players/$(request.resource.data.playerCode)).data.guardianId == request.auth.uid
+        && ((isGuardian()
+            && request.resource.data.playerId == get(/databases/$(database)/documents/players/$(request.resource.data.playerCode)).data.id
+            && get(/databases/$(database)/documents/players/$(request.resource.data.playerCode)).data.guardianId == request.auth.uid)
+          || (isMember()
+            && request.resource.data.playerId == memberPlayerId()
+            && request.resource.data.playerCode == get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode))
         && request.resource.data.expectedStartDate is string
         && request.resource.data.expectedStartDate.size() == 10
         && request.resource.data.playerName is string
@@ -509,80 +620,10 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    match /notificationTokens/{tokenId} {
-      allow read: if isCoach()
-        || (signedIn() && resource.data.ownerUid == request.auth.uid);
-      allow create: if (isGuardian()
-        && request.resource.data.keys().hasAll(['ownerUid', 'guardianId', 'role', 'token', 'updatedAt'])
-        && request.resource.data.keys().hasOnly(['ownerUid', 'guardianId', 'role', 'token', 'updatedAt'])
-        && request.resource.data.ownerUid == request.auth.uid
-        && request.resource.data.guardianId == request.auth.uid
-        && request.resource.data.role == 'guardian'
-        && request.resource.data.updatedAt is timestamp
-        && request.resource.data.token is string
-        && request.resource.data.token.size() > 0
-        && request.resource.data.token.size() <= 4096)
-        || (isMember()
-        && request.resource.data.keys().hasAll(['ownerUid', 'guardianId', 'playerId', 'role', 'token', 'updatedAt'])
-        && request.resource.data.keys().hasOnly(['ownerUid', 'guardianId', 'playerId', 'role', 'token', 'updatedAt'])
-        && request.resource.data.ownerUid == request.auth.uid
-        && request.resource.data.playerId == memberPlayerId()
-        && request.resource.data.role == 'member'
-        && request.resource.data.guardianId == get(/databases/$(database)/documents/players/$(get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode)).data.guardianId
-        && request.resource.data.updatedAt is timestamp
-        && request.resource.data.token is string
-        && request.resource.data.token.size() > 0
-        && request.resource.data.token.size() <= 4096);
-      allow create: if (isCoach() || isTrainer())
-        && request.resource.data.keys().hasAll(['ownerUid', 'role', 'token', 'updatedAt'])
-        && request.resource.data.keys().hasOnly(['ownerUid', 'role', 'token', 'updatedAt'])
-        && request.resource.data.ownerUid == request.auth.uid
-        && request.resource.data.role == userProfile(request.auth.uid).role
-        && request.resource.data.updatedAt is timestamp
-        && request.resource.data.token is string
-        && request.resource.data.token.size() > 0
-        && request.resource.data.token.size() <= 4096;
-      allow update: if (isGuardian()
-        && resource.data.ownerUid == request.auth.uid
-        && request.resource.data.ownerUid == request.auth.uid
-        && request.resource.data.guardianId == request.auth.uid
-        && request.resource.data.role == 'guardian'
-        && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['guardianId', 'role', 'token', 'updatedAt'])
-        && request.resource.data.token is string
-        && request.resource.data.token.size() > 0
-        && request.resource.data.token.size() <= 4096
-        && request.resource.data.updatedAt is timestamp)
-        || (isMember()
-        && resource.data.ownerUid == request.auth.uid
-        && request.resource.data.ownerUid == request.auth.uid
-        && request.resource.data.playerId == memberPlayerId()
-        && request.resource.data.role == 'member'
-        && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['guardianId', 'playerId', 'role', 'token', 'updatedAt'])
-        && request.resource.data.guardianId == get(/databases/$(database)/documents/players/$(get(/databases/$(database)/documents/playerSessions/$(request.auth.uid)).data.playerCode)).data.guardianId
-        && request.resource.data.token is string
-        && request.resource.data.token.size() > 0
-        && request.resource.data.token.size() <= 4096
-        && request.resource.data.updatedAt is timestamp);
-      allow update: if (isCoach() || isTrainer())
-        && resource.data.ownerUid == request.auth.uid
-        && request.resource.data.ownerUid == request.auth.uid
-        && request.resource.data.role == userProfile(request.auth.uid).role
-        && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['role', 'token', 'updatedAt'])
-        && request.resource.data.token is string
-        && request.resource.data.token.size() > 0
-        && request.resource.data.token.size() <= 4096
-        && request.resource.data.updatedAt is timestamp;
-      allow delete: if isCoach()
-        || (signedIn() && resource.data.ownerUid == request.auth.uid);
-    }
-
     match /paymentReferenceClaims/{claimId} {
       allow get: if signedIn();
       allow list: if false;
-      allow create: if (isGuardian() || isCoach())
+      allow create: if (isGuardian() || isMember() || isCoach())
         && request.resource.data.keys().hasAll(['ownerUid', 'createdAt'])
         && request.resource.data.keys().hasOnly(['ownerUid', 'createdAt'])
         && request.resource.data.ownerUid == request.auth.uid
