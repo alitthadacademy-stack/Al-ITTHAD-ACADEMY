@@ -5315,6 +5315,37 @@ document.addEventListener("click", async event => {
   }
   const action = target.closest("[data-action]");
   if (!action) return;
+  if (["player-card-preview", "download-player-card", "download-all-cards", "download-card-count"].includes(action.dataset.action)) {
+    if (currentUser?.role !== "coach") { showToast("إدارة الكارنيهات متاحة للمشرف فقط."); return; }
+    const button = action;
+    button.disabled = true;
+    try {
+      if (action.dataset.action === "player-card-preview") {
+        await openPlayerCardPreview(action.dataset.player);
+      } else {
+        const players = cardPlayers();
+        let selectedPlayers = players;
+        if (action.dataset.action === "download-player-card") {
+          selectedPlayers = players.filter(player => player.id === action.dataset.player);
+        } else if (action.dataset.action === "download-card-count") {
+          const count = Number(byId("player-card-count")?.value);
+          if (!Number.isInteger(count) || count < 1 || count > players.length) {
+            showToast(`أدخل عددًا صحيحًا من ١ إلى ${arabicDigits(players.length)}.`);
+            return;
+          }
+          selectedPlayers = players.slice(0, count);
+        }
+        await downloadPlayerCardArchive(selectedPlayers);
+        showToast(`تم تنزيل وجهي الكارنيهات لعدد ${arabicDigits(selectedPlayers.length)} لاعب.`);
+      }
+    } catch (error) {
+      console.error("تعذر تنزيل الكارنيهات.", error);
+      showToast(error instanceof Error ? error.message : "تعذر تنزيل الكارنيهات.");
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
+    return;
+  }
   if (action.dataset.action === "select-legacy-player") {
     if (currentUser?.role !== "coach") { showToast("ملفات اللاعبين الحاليين متاحة للمشرف فقط."); return; }
     const player = data.users.find(item => item.id === action.dataset.player && item.role === "member");
