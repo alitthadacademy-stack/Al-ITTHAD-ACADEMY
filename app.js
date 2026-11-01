@@ -893,7 +893,13 @@ function renderPlayerQrCodes(container = document) {
   });
 }
 
-let playerCardCrestPromise = null;
+const PLAYER_CARD_TEMPLATES = {
+  male: "بطاقة تعريف أكاديمية للبنين_20261027_145114_٠٠٠٠.pdf",
+  female: "بطاقة تعريف أكاديمية البنات_20261027_142042_٠٠٠٠.pdf_20261027_150518_٠٠٠٠.pdf"
+};
+const PLAYER_CARD_RENDER_SCALE = 300 / 72;
+const playerCardTemplatePromises = {};
+const playerCardBasePagePromises = {};
 
 function cardPlayers() {
   return data.users
@@ -901,25 +907,29 @@ function cardPlayers() {
     .sort((left, right) => left.name.localeCompare(right.name, "ar"));
 }
 
-async function playerCardCrestDataUrl() {
-  if (!playerCardCrestPromise) {
-    playerCardCrestPromise = fetch("./functions/app-icon.png")
+async function playerCardTemplate(gender) {
+  if (typeof window.pdfjsLib?.getDocument !== "function") {
+    throw new Error("تعذر تحميل قارئ تصميم الكارنيه. تحقق من الاتصال وأعد تحميل الصفحة.");
+  }
+  const templateName = PLAYER_CARD_TEMPLATES[gender === "female" ? "female" : "male"];
+  if (!playerCardTemplatePromises[templateName]) {
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
+    playerCardTemplatePromises[templateName] = fetch(`./${encodeURIComponent(templateName)}`)
       .then(response => {
-        if (!response.ok) throw new Error("تعذر تحميل شعار النادي.");
-        return response.blob();
+        if (!response.ok) throw new Error("تعذر تحميل ملف تصميم الكارنيه.");
+        return response.arrayBuffer();
       })
-      .then(blob => new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(new Error("تعذر تجهيز شعار النادي."));
-        reader.readAsDataURL(blob);
-      }))
+      .then(bytes => window.pdfjsLib.getDocument({ data: bytes }).promise)
+      .then(pdf => {
+        if (pdf.numPages !== 2) throw new Error("ملف تصميم الكارنيه يجب أن يحتوي على وجهين.");
+        return pdf;
+      })
       .catch(error => {
-        console.warn("تعذر تحميل شعار الكارنيه.", error);
-        return "";
+        delete playerCardTemplatePromises[templateName];
+        throw error;
       });
   }
-  return playerCardCrestPromise;
+  return playerCardTemplatePromises[templateName];
 }
 
 function playerCardQrDataUrl(code) {
@@ -930,80 +940,129 @@ function playerCardQrDataUrl(code) {
   return `data:image/svg+xml;base64,${btoa(qr.createSvgTag(8, 2))}`;
 }
 
-function playerCardSvg(player, side, crestDataUrl = "") {
-  const female = player.gender === "female";
-  const palette = female
-    ? { base: "#fbf8f7", shade: "#f2e9ec", ink: "#25483e", accent: "#c77992", green: "#6e9a80", pale: "#fffdfc", line: "#d8c8cd" }
-    : { base: "#071b17", shade: "#123d30", ink: "#f8f4e9", accent: "#d9b866", green: "#368866", pale: "#eff4ee", line: "#a8b7ae" };
-  const name = escapeHtml(player.name || "اللاعب");
-  const birthDate = escapeHtml(player.birthDate || "غير محدد");
-  const code = escapeHtml(player.playerCode || "");
-  const crest = crestDataUrl
-    ? `<image href="${crestDataUrl}" x="82" y="78" width="228" height="228" preserveAspectRatio="xMidYMid meet"/>`
-    : `<text x="196" y="190" text-anchor="middle" fill="${palette.accent}" font-size="62" font-weight="800">الاتحاد</text><text x="196" y="232" text-anchor="middle" fill="${palette.ink}" font-size="25">ALEXANDRIA CLUB</text>`;
-  const shell = `<defs>
-      <linearGradient id="card" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${palette.base}"/><stop offset=".62" stop-color="${palette.shade}"/><stop offset="1" stop-color="${palette.base}"/></linearGradient>
-      <linearGradient id="trim" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${palette.accent}"/><stop offset=".5" stop-color="${palette.pale}"/><stop offset="1" stop-color="${palette.green}"/></linearGradient>
-      <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%"><feDropShadow dx="0" dy="13" stdDeviation="13" flood-color="#10251d" flood-opacity=".2"/></filter>
-    </defs>
-    <rect x="12" y="12" width="1026" height="636" rx="48" fill="url(#card)" stroke="url(#trim)" stroke-width="12" filter="url(#shadow)"/>
-    <path d="M22 492 Q220 415 382 648 H80 Q35 630 22 580Z" fill="${palette.green}" opacity=".16"/>
-    <path d="M720 15 Q866 168 1032 194 V84 Q1020 15 950 15Z" fill="${palette.accent}" opacity=".15"/>
-    <path d="M24 560 Q245 452 400 642 M640 18 Q793 140 1028 166" fill="none" stroke="url(#trim)" stroke-width="5" opacity=".75"/>`;
-  const header = `<text x="946" y="94" text-anchor="end" direction="rtl" fill="${palette.ink}" font-family="Arial,Tahoma,sans-serif" font-size="27" font-weight="700">أكاديمية نادي الاتحاد السكندري</text>
-      <text x="946" y="143" text-anchor="end" fill="${palette.green}" font-family="Arial,sans-serif" font-size="32" font-weight="800" letter-spacing="1">AL ITTIHAD ACADEMY</text>
-      <text x="946" y="182" text-anchor="end" direction="rtl" fill="${palette.accent}" font-family="Arial,Tahoma,sans-serif" font-size="22" font-weight="700">تأسست عام 1914</text>`;
-
-  if (side === "front") {
-    return `<svg xmlns="http://www.w3.org/2000/svg" width="1050" height="660" viewBox="0 0 1050 660">${shell}${crest}${header}
-      <path d="M350 220 H947" stroke="${palette.line}" stroke-width="2" opacity=".9"/>
-      <text x="944" y="303" text-anchor="end" direction="rtl" fill="${palette.green}" font-family="Arial,Tahoma,sans-serif" font-size="24" font-weight="700">${female ? "اللاعبة" : "اللاعب"}</text>
-      <text x="944" y="366" text-anchor="end" direction="rtl" fill="${palette.ink}" font-family="Arial,Tahoma,sans-serif" font-size="46" font-weight="800" textLength="570" lengthAdjust="spacingAndGlyphs">${name}</text>
-      <rect x="480" y="416" width="466" height="146" rx="20" fill="${female ? "#ffffff" : "#ffffff12"}" stroke="${palette.line}" stroke-width="2"/>
-      <text x="910" y="456" text-anchor="end" direction="rtl" fill="${palette.green}" font-family="Arial,Tahoma,sans-serif" font-size="20">كود اللاعب</text>
-      <text x="910" y="500" text-anchor="end" fill="${palette.ink}" font-family="Arial,sans-serif" font-size="38" font-weight="800" letter-spacing="5">${code}</text>
-      <text x="910" y="540" text-anchor="end" direction="rtl" fill="${palette.green}" font-family="Arial,Tahoma,sans-serif" font-size="18">تاريخ الميلاد: ${birthDate}</text>
-      <text x="103" y="594" text-anchor="start" direction="rtl" fill="${palette.ink}" font-family="Arial,Tahoma,sans-serif" font-size="16" opacity=".8">بطاقة تعريف لاعب الأكاديمية</text>
-      </svg>`;
+function cardFieldBackground(context, field, pageTop, pageLeft, scale) {
+  const counts = new Map();
+  for (const offset of [1, 2, 4, 6]) {
+    for (const verticalOffset of [0.5, field.height / 2, field.height - 0.5]) {
+      const x = Math.round((field.x + field.width + offset - pageLeft) * scale);
+      const y = Math.round((pageTop - field.y - verticalOffset) * scale);
+      if (x < 0 || y < 0 || x >= context.canvas.width || y >= context.canvas.height) continue;
+      const [red, green, blue] = context.getImageData(x, y, 1, 1).data;
+      const color = `${red},${green},${blue}`;
+      counts.set(color, (counts.get(color) || 0) + 1);
+    }
   }
-
-  const qrDataUrl = playerCardQrDataUrl(player.playerCode || "000000");
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="1050" height="660" viewBox="0 0 1050 660">${shell}
-    <rect x="73" y="128" width="385" height="400" rx="28" fill="#fff" stroke="${palette.accent}" stroke-width="5"/>
-    <image href="${qrDataUrl}" x="112" y="167" width="307" height="307" preserveAspectRatio="xMidYMid meet"/>
-    <text x="266" y="505" text-anchor="middle" fill="#223d34" font-family="Arial,sans-serif" font-size="21" font-weight="700">SCAN FOR ATTENDANCE</text>
-    <text x="945" y="158" text-anchor="end" direction="rtl" fill="${palette.ink}" font-family="Arial,Tahoma,sans-serif" font-size="30" font-weight="800">بيانات الإدارة</text>
-    <path d="M560 190 H945" stroke="${palette.accent}" stroke-width="4"/>
-    <text x="945" y="270" text-anchor="end" direction="rtl" fill="${palette.green}" font-family="Arial,Tahoma,sans-serif" font-size="22">رئيس الأكاديمية</text>
-    <text x="945" y="323" text-anchor="end" direction="rtl" fill="${palette.ink}" font-family="Arial,Tahoma,sans-serif" font-size="34" font-weight="800">ك/ حازم الدخاخني</text>
-    <text x="945" y="405" text-anchor="end" direction="rtl" fill="${palette.green}" font-family="Arial,Tahoma,sans-serif" font-size="22">للتواصل</text>
-    <text x="945" y="459" text-anchor="end" fill="${palette.ink}" font-family="Arial,sans-serif" font-size="32" font-weight="700">+20 10 17692213</text>
-    <text x="945" y="535" text-anchor="end" direction="rtl" fill="${palette.ink}" font-family="Arial,Tahoma,sans-serif" font-size="18">الاتحاد السكندري · تأسس 1914</text>
-    </svg>`;
+  return [...counts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0]
+    ?.split(",").map(Number) || [255, 255, 255];
 }
 
-function cardSvgDataUrl(svg) {
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+function playerCardBirthDate(player) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(player.birthDate || "");
+  return match ? `${match[3]}/${match[2]}/${match[1]}` : "";
 }
 
-function cardSvgToPng(svg) {
+function drawPlayerCardField(context, field, value, pageTop, pageLeft, scale, color) {
+  const [red, green, blue] = cardFieldBackground(context, field, pageTop, pageLeft, scale);
+  const top = (pageTop - field.y - field.height) * scale;
+  const x = (field.x - pageLeft) * scale;
+  const width = field.width * scale;
+  context.fillStyle = `rgb(${red} ${green} ${blue})`;
+  context.fillRect(x - scale, top - scale, width + scale * 2, (field.height + 2) * scale);
+  context.save();
+  context.direction = "rtl";
+  context.textAlign = "center";
+  context.textBaseline = "alphabetic";
+  let fontSize = field.height * scale * 0.88;
+  context.font = `600 ${fontSize}px Arial, Tahoma, sans-serif`;
+  while (context.measureText(value).width > width - scale * 2 && fontSize > 8) {
+    fontSize -= 1;
+    context.font = `600 ${fontSize}px Arial, Tahoma, sans-serif`;
+  }
+  context.fillStyle = color;
+  context.fillText(value, (field.x + field.width / 2 - pageLeft) * scale, (pageTop - field.y) * scale, width - scale * 2);
+  context.restore();
+}
+
+function playerCardFields(female) {
+  return female
+    ? {
+      name: { x: 130, y: 75.4, width: 48.7, height: 5.8 },
+      code: { x: 136.7, y: 58.4, width: 35, height: 5.8 },
+      birthDate: { x: 135.5, y: 39.7, width: 41, height: 5.8 }
+    }
+    : {
+      name: { x: 154.3, y: 76.9, width: 63.2, height: 6.1 },
+      code: { x: 150, y: 60.5, width: 46.9, height: 6.7 },
+      birthDate: { x: 147.7, y: 44.7, width: 50.4, height: 6.7 }
+    };
+}
+
+function drawPlayerCardQr(context, player, female, scale) {
   return new Promise((resolve, reject) => {
     const image = new Image();
-    const objectUrl = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
     image.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = 2100;
-      canvas.height = 1320;
-      const context = canvas.getContext("2d");
-      context.drawImage(image, 0, 0, canvas.width, canvas.height);
-      URL.revokeObjectURL(objectUrl);
-      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("تعذر إنشاء صورة الكارنيه.")), "image/png");
+      const box = female ? { x: 22, top: 31, size: 80 } : { x: 28, top: 35, size: 82 };
+      context.save();
+      context.fillStyle = "#fff";
+      context.fillRect(box.x * scale, box.top * scale, box.size * scale, box.size * scale);
+      context.drawImage(image, (box.x + 3) * scale, (box.top + 3) * scale, (box.size - 6) * scale, (box.size - 6) * scale);
+      context.restore();
+      resolve();
     };
-    image.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error("تعذر تجهيز تصميم الكارنيه."));
-    };
-    image.src = objectUrl;
+    image.onerror = () => reject(new Error("تعذر إنشاء رمز الحضور على الكارنيه."));
+    image.src = playerCardQrDataUrl(player.playerCode || "000000");
+  });
+}
+
+async function renderPlayerCardPage(player, side) {
+  const female = player.gender === "female";
+  const templateKey = female ? "female" : "male";
+  const pageNumber = side === "front" ? 1 : 2;
+  const cacheKey = `${templateKey}:${pageNumber}`;
+  if (!playerCardBasePagePromises[cacheKey]) {
+    playerCardBasePagePromises[cacheKey] = playerCardTemplate(templateKey).then(async pdf => {
+      const page = await pdf.getPage(pageNumber);
+      const viewport = page.getViewport({ scale: PLAYER_CARD_RENDER_SCALE });
+      const baseCanvas = document.createElement("canvas");
+      baseCanvas.width = Math.ceil(viewport.width);
+      baseCanvas.height = Math.ceil(viewport.height);
+      await page.render({ canvasContext: baseCanvas.getContext("2d", { willReadFrequently: true }), viewport }).promise;
+      return {
+        canvas: baseCanvas,
+        pageTop: page.view[3],
+        pageLeft: page.view[0]
+      };
+    }).catch(error => {
+      delete playerCardBasePagePromises[cacheKey];
+      throw error;
+    });
+  }
+  const { canvas: baseCanvas, pageTop, pageLeft } = await playerCardBasePagePromises[cacheKey];
+  const canvas = document.createElement("canvas");
+  canvas.width = baseCanvas.width;
+  canvas.height = baseCanvas.height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.drawImage(baseCanvas, 0, 0);
+  if (side === "front") {
+    const fields = playerCardFields(female);
+    const color = female ? "#174f40" : "#f4f4f0";
+    drawPlayerCardField(context, fields.name, player.name || "", pageTop, pageLeft, PLAYER_CARD_RENDER_SCALE, color);
+    drawPlayerCardField(context, fields.code, player.playerCode || "", pageTop, pageLeft, PLAYER_CARD_RENDER_SCALE, color);
+    drawPlayerCardField(context, fields.birthDate, playerCardBirthDate(player), pageTop, pageLeft, PLAYER_CARD_RENDER_SCALE, color);
+  } else {
+    await drawPlayerCardQr(context, player, female, PLAYER_CARD_RENDER_SCALE);
+  }
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("تعذر إنشاء صورة الكارنيه.")), "image/png");
+  });
+}
+
+function cardBlobDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("تعذر تجهيز معاينة الكارنيه."));
+    reader.readAsDataURL(blob);
   });
 }
 
@@ -1015,14 +1074,13 @@ async function downloadPlayerCardArchive(players) {
   if (currentUser?.role !== "coach") throw new Error("تحميل الكارنيهات متاح للمشرف فقط.");
   if (!players.length) throw new Error("لا يوجد لاعبون صالحون لإنشاء الكارنيهات.");
   if (typeof window.JSZip !== "function") throw new Error("تعذر تحميل أداة إنشاء الملف المضغوط. تحقق من الاتصال وأعد المحاولة.");
-  const crestDataUrl = await playerCardCrestDataUrl();
   const zip = new window.JSZip();
   for (const [index, player] of players.entries()) {
     const number = String(index + 1).padStart(3, "0");
     const fileBase = `${number}_${playerCardFileName(player)}_${player.playerCode}`;
-    const front = await cardSvgToPng(playerCardSvg(player, "front", crestDataUrl));
+    const front = await renderPlayerCardPage(player, "front");
     zip.file(`${fileBase}_01_front.png`, front);
-    const back = await cardSvgToPng(playerCardSvg(player, "back", crestDataUrl));
+    const back = await renderPlayerCardPage(player, "back");
     zip.file(`${fileBase}_02_back.png`, back);
   }
   const archive = await zip.generateAsync({ type: "blob", compression: "DEFLATE", compressionOptions: { level: 6 } });
@@ -1043,9 +1101,10 @@ async function openPlayerCardPreview(playerId) {
   const player = cardPlayers().find(item => item.id === playerId);
   if (!player) { showToast("لم يتم العثور على اللاعب."); return; }
   try {
-    const crestDataUrl = await playerCardCrestDataUrl();
-    const front = cardSvgDataUrl(playerCardSvg(player, "front", crestDataUrl));
-    const back = cardSvgDataUrl(playerCardSvg(player, "back", crestDataUrl));
+    openModal(`كارنيه ${player.name}`, '<p class="form-note" role="status">جارٍ تجهيز معاينة الكارنيه من التصميم الأصلي...</p>', "جارٍ التجهيز", () => {}, "كارنيهات الأكاديمية");
+    byId("action-form").querySelector('button[type="submit"]').disabled = true;
+    const front = await cardBlobDataUrl(await renderPlayerCardPage(player, "front"));
+    const back = await cardBlobDataUrl(await renderPlayerCardPage(player, "back"));
     openModal(`كارنيه ${player.name}`, `<div class="player-card-preview-grid"><figure><img src="${front}" alt="الوجه الأمامي لكارنيه ${escapeHtml(player.name)}"><figcaption>الوجه الأمامي</figcaption></figure><figure><img src="${back}" alt="الوجه الخلفي لكارنيه ${escapeHtml(player.name)}"><figcaption>الوجه الخلفي · QR للحضور</figcaption></figure></div>`, "تحميل الكارنيه", async () => {
       await downloadPlayerCardArchive([player]);
       closeModal();
@@ -1053,6 +1112,7 @@ async function openPlayerCardPreview(playerId) {
     }, "كارنيهات الأكاديمية");
   } catch (error) {
     console.error("تعذر إنشاء معاينة الكارنيه.", error);
+    closeModal();
     showToast(error instanceof Error ? error.message : "تعذر فتح الكارنيه.");
   }
 }
@@ -1060,7 +1120,7 @@ async function openPlayerCardPreview(playerId) {
 function coachPlayerCardsView() {
   const players = cardPlayers();
   const rows = players.map(player => `<tr><td>${escapeHtml(player.name)}</td><td dir="ltr">${escapeHtml(player.playerCode)}</td><td>${genderLabel(player.gender)}</td><td><div class="player-card-row-actions"><button class="small-action" data-action="player-card-preview" data-player="${escapeHtml(player.id)}">فتح الكارنيه</button><button class="small-action" data-action="download-player-card" data-player="${escapeHtml(player.id)}">تحميل</button></div></td></tr>`).join("");
-  return `<section class="page-intro"><div><p class="eyebrow">هوية لاعبي الأكاديمية</p><h1>كارنيهات اللاعبين</h1><p class="welcome-subtitle">قوالب تلقائية حسب النوع، بوجهين جاهزين للطباعة وبلا صورة شخصية.</p></div></section>
+  return `<section class="page-intro"><div><p class="eyebrow">هوية لاعبي الأكاديمية</p><h1>كارنيهات اللاعبين</h1><p class="welcome-subtitle">نفس تصميم ملف الأكاديمية الأصلي للبنين والبنات، بوجهين جاهزين للطباعة.</p></div></section>
     <section class="panel player-card-tools"><div class="player-card-count"><label for="player-card-count">عدد اللاعبين للتنزيل</label><input id="player-card-count" type="number" min="1" max="${players.length}" value="${players.length}" ${players.length ? "" : "disabled"}></div><div class="player-card-batch-actions"><button class="secondary-button" data-action="download-card-count" ${players.length ? "" : "disabled"}>تحميل العدد المحدد</button><button class="primary-button" data-action="download-all-cards" ${players.length ? "" : "disabled"}>تحميل الكل · ${arabicDigits(players.length)}</button></div><p class="form-note">يتضمن الملف صور PNG بدقة عالية، مرتبة أمام ثم خلف لكل لاعب بالترتيب الأبجدي.</p></section>
     <section class="panel player-cards-table"><div class="panel-heading"><div><h2>سجل الكارنيهات</h2><p>${arabicDigits(players.length)} لاعب مسجل</p></div></div>${players.length ? `<div class="table-wrap"><table><thead><tr><th>اسم اللاعب / اللاعبة</th><th>الكود</th><th>النوع</th><th>الإجراء</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty-state"><p>لا يوجد لاعبون مسجلون بعد.</p></div>'}</section>`;
 }
@@ -5318,7 +5378,9 @@ document.addEventListener("click", async event => {
   if (["player-card-preview", "download-player-card", "download-all-cards", "download-card-count"].includes(action.dataset.action)) {
     if (currentUser?.role !== "coach") { showToast("إدارة الكارنيهات متاحة للمشرف فقط."); return; }
     const button = action;
+    const originalLabel = button.textContent;
     button.disabled = true;
+    button.textContent = action.dataset.action === "player-card-preview" ? "جارٍ فتح الكارنيه..." : "جارٍ تجهيز الكارنيهات...";
     try {
       if (action.dataset.action === "player-card-preview") {
         await openPlayerCardPreview(action.dataset.player);
@@ -5342,7 +5404,10 @@ document.addEventListener("click", async event => {
       console.error("تعذر تنزيل الكارنيهات.", error);
       showToast(error instanceof Error ? error.message : "تعذر تنزيل الكارنيهات.");
     } finally {
-      if (button.isConnected) button.disabled = false;
+      if (button.isConnected) {
+        button.textContent = originalLabel;
+        button.disabled = false;
+      }
     }
     return;
   }
